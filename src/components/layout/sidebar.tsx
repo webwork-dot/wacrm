@@ -184,22 +184,26 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
         )}
         aria-label="Primary"
       >
-        {/* Logo row. On mobile we put a close button here; on desktop the
-            close button is hidden since the sidebar is always-visible. */}
-        <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
-          <Link href="/dashboard" className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <MessageSquare className="h-4 w-4" />
-            </div>
-            <span className="text-sm font-semibold text-foreground">
-              {t("title")}
-            </span>
+        {/* Logo row — full-bleed wordmark. Close button overlays on mobile
+            so it doesn't introduce padding around the brand. */}
+        <div className="relative shrink-0 border-b border-border">
+          <Link
+            href="/dashboard"
+            className="block w-full"
+            aria-label={t("title")}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element -- static brand asset from /public */}
+            <img
+              src="/logo.png"
+              alt={t("title")}
+              className="block h-auto w-full object-cover object-center"
+            />
           </Link>
           <button
             type="button"
             onClick={onClose}
             aria-label={t("closeMenu")}
-            className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground lg:hidden"
+            className="absolute top-1/2 right-2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-md bg-background/80 text-muted-foreground backdrop-blur-sm hover:bg-muted hover:text-foreground lg:hidden"
           >
             <X className="h-5 w-5" />
           </button>

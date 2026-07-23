@@ -441,28 +441,33 @@ export async function sendMessageToConversation(
   }
 
   // Persist the sent message. Field names MUST match the messages
-  // schema (see 001_initial_schema.sql).
+  // schema (see 001_initial_schema.sql + 035_interactive_messages.sql).
   // Interactive messages persist the body as content_text (so the
   // conversation-list preview reads sensibly) plus the full structured
   // payload so the thread can re-render the buttons / rows.
+  // Only include `interactive_payload` when sending interactive — writing
+  // `null` still requires the column to exist in PostgREST's schema cache.
   const interactiveBody =
     messageType === 'interactive' ? interactivePayload!.body : null;
 
+  const insertRow: Record<string, unknown> = {
+    conversation_id: conversationId,
+    sender_type: 'agent',
+    content_type: messageType,
+    content_text: interactiveBody ?? contentText ?? null,
+    media_url: mediaUrl || null,
+    template_name: templateName || null,
+    message_id: waMessageId,
+    status: 'sent',
+    reply_to_message_id: replyToMessageId || null,
+  };
+  if (messageType === 'interactive') {
+    insertRow.interactive_payload = interactivePayload;
+  }
+
   const { data: messageRecord, error: msgError } = await db
     .from('messages')
-    .insert({
-      conversation_id: conversationId,
-      sender_type: 'agent',
-      content_type: messageType,
-      content_text: interactiveBody ?? contentText ?? null,
-      media_url: mediaUrl || null,
-      template_name: templateName || null,
-      interactive_payload:
-        messageType === 'interactive' ? interactivePayload : null,
-      message_id: waMessageId,
-      status: 'sent',
-      reply_to_message_id: replyToMessageId || null,
-    })
+    .insert(insertRow)
     .select()
     .single();
 
