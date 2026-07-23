@@ -22,10 +22,23 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: {
-    default: "wacrm",
-    template: "%s — wacrm",
+    default: "Web Work",
+    template: "%s — Web Work",
   },
-  description: "Self-hostable CRM template for WhatsApp.",
+  description:
+    "WhatsApp CRM by Web Work — shared inbox, contacts, pipelines, and team messaging.",
+  applicationName: "Web Work",
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ||
+      "https://wapi.webwork.co.in",
+  ),
+  openGraph: {
+    title: "Web Work",
+    description:
+      "WhatsApp CRM by Web Work — shared inbox, contacts, pipelines, and team messaging.",
+    siteName: "Web Work",
+    type: "website",
+  },
   robots: {
     index: false,
     follow: false,
