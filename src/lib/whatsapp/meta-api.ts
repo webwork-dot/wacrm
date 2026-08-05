@@ -21,6 +21,38 @@ export interface MetaPhoneInfo {
   display_phone_number: string
   verified_name?: string
   quality_rating?: string
+  /**
+   * Cloud API phone status. `CONNECTED` means this token can use the
+   * number (send + typically receive once the WABA is subscribed).
+   * Other values: PENDING, DISCONNECTED, FLAGGED, …
+   */
+  status?: string
+  is_pin_enabled?: boolean
+  code_verification_status?: string
+}
+
+/** True when Meta reports the number as live on Cloud API for this token. */
+export function isCloudApiConnected(
+  info: Pick<MetaPhoneInfo, 'status'>,
+): boolean {
+  return (info.status ?? '').toUpperCase() === 'CONNECTED'
+}
+
+/**
+ * Safe to mark locally registered without calling /register.
+ *
+ * Meta does not issue a two-step PIN. Many verified Cloud API numbers
+ * (business-verified, Embedded Signup, WhatsApp Manager) never show a
+ * PIN setting at all — they are already CONNECTED to this token. Requiring
+ * a PIN in that case blocks inbound setup for no reason.
+ *
+ * If the user *does* have a PIN field in WhatsApp Manager, they can still
+ * enter it on Save to call POST /register explicitly.
+ */
+export function canInferCloudApiRegistration(
+  info: Pick<MetaPhoneInfo, 'status'>,
+): boolean {
+  return isCloudApiConnected(info)
 }
 
 interface MetaErrorResponse {
@@ -55,7 +87,7 @@ export async function verifyPhoneNumber(
   args: VerifyPhoneNumberArgs
 ): Promise<MetaPhoneInfo> {
   const { phoneNumberId, accessToken } = args
-  const url = `${META_API_BASE}/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating`
+  const url = `${META_API_BASE}/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating,status,is_pin_enabled,code_verification_status`
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })

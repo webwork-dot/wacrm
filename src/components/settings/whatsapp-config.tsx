@@ -69,6 +69,7 @@ export function WhatsAppConfig() {
   const [verifyToken, setVerifyToken] = useState('');
   const [pin, setPin] = useState('');
   const [tokenEdited, setTokenEdited] = useState(false);
+  const [verifyTokenEdited, setVerifyTokenEdited] = useState(false);
 
   // True once /register has succeeded on Meta's side (timestamp set
   // in the row). When false, the saved config is metadata-only and
@@ -82,6 +83,7 @@ export function WhatsAppConfig() {
     live: boolean;
     checks: Record<string, boolean | null>;
     errors?: string[];
+    backfilled?: boolean;
     last_registration_error?: string | null;
     registered_at?: string | null;
     subscribed_apps_at?: string | null;
@@ -94,7 +96,10 @@ export function WhatsAppConfig() {
       ? `${window.location.origin}/api/whatsapp/webhook`
       : '';
 
-  const fetchConfig = useCallback(async (acctId: string) => {
+  const fetchConfig = useCallback(async (
+    acctId: string,
+    opts?: { preserveProbe?: boolean },
+  ) => {
     setLoading(true);
     try {
       // Load form values from Supabase (shows what's in DB).
@@ -121,6 +126,7 @@ export function WhatsAppConfig() {
         setVerifyToken('');
         setPin('');
         setTokenEdited(false);
+        setVerifyTokenEdited(false);
       } else {
         setConfig(null);
         setPhoneNumberId('');
@@ -129,9 +135,11 @@ export function WhatsAppConfig() {
         setVerifyToken('');
         setPin('');
         setTokenEdited(false);
+        setVerifyTokenEdited(false);
       }
-      // Clear any stale probe result when reloading the row.
-      setRegistrationProbe(null);
+      if (!opts?.preserveProbe) {
+        setRegistrationProbe(null);
+      }
 
       // Then verify health via the API (decrypts token + pings Meta)
       if (data) {
@@ -187,6 +195,10 @@ export function WhatsAppConfig() {
       toast.error('Phone Number ID is required');
       return;
     }
+    if (!wabaId.trim()) {
+      toast.error('WhatsApp Business Account ID is required for inbound events');
+      return;
+    }
     if (!config && (!accessToken.trim() || !tokenEdited)) {
       toast.error('Access Token is required for initial setup');
       return;
@@ -202,23 +214,18 @@ export function WhatsAppConfig() {
       const payload: Record<string, unknown> = {
         phone_number_id: phoneNumberId.trim(),
         waba_id: wabaId.trim() || null,
-        verify_token: verifyToken.trim() || null,
-        // Optional — only sent when the user filled it in. The server
-        // requires it on first save or when changing numbers; for a
-        // simple token rotation, leaving it blank skips re-register.
         pin: pin.trim() || null,
       };
 
       if (tokenEdited && accessToken !== MASKED_TOKEN && accessToken.trim()) {
         payload.access_token = accessToken.trim();
-      } else if (config) {
-        // Existing config — reuse stored encrypted token by decrypting on the
-        // server. But our POST handler requires an access_token to verify
-        // with Meta. If the user didn't change the token, we need to signal
-        // that. Simplest: require token re-entry if they're updating.
-        toast.error('Please re-enter the Access Token to save changes');
-        setSaving(false);
-        return;
+      }
+
+      // Only send verify_token when the user typed a new one — omitting
+      // the key keeps the stored webhook token (a blank re-save used to
+      // wipe it and break Meta's hub.verify_token handshake).
+      if (verifyTokenEdited && verifyToken.trim()) {
+        payload.verify_token = verifyToken.trim();
       }
 
       const res = await fetch('/api/whatsapp/config', {
@@ -241,19 +248,20 @@ export function WhatsAppConfig() {
       //                         failed; UI shows the specific error
       //                         and a retry path. registration_error
       //                         is human-readable from Meta.
-      if (data.registered === false && data.registration_error) {
+      if (data.subscription_error) {
+        toast.error(
+          `Saved credentials, but WABA subscription failed: ${data.subscription_error}`,
+          { duration: 12000 },
+        );
+      } else if (data.registered === false && data.registration_error) {
         toast.error(
           `Saved, but Meta couldn't register the number: ${data.registration_error}`,
           { duration: 12000 },
         );
       } else if (data.registration_skipped) {
-        // Credentials saved + verified, but /register was skipped
-        // because no PIN was supplied (e.g. a Meta test number).
-        // Don't claim the number is "Live" — point at the
-        // Registration status banner instead.
-        toast.success(
-          'Credentials saved and verified. Inbound registration was skipped (no PIN) — see Registration status below.',
-          { duration: 10000 },
+        toast.error(
+          'Credentials saved, but Meta does not report this number as Connected yet — or WABA subscribe failed. Business verification alone is not enough. Click Verify with Meta for details. A two-step PIN is only needed if you created one in WhatsApp Manager (Meta does not generate one).',
+          { duration: 14000 },
         );
         setPin('');
       } else {
@@ -262,10 +270,13 @@ export function WhatsAppConfig() {
             ? `Live — ${data.phone_info.verified_name} can now receive events.`
             : 'WhatsApp connected. Events will start flowing within a minute.',
         );
-        // Clear the PIN so subsequent saves don't accidentally
-        // re-register (which would void the active subscription if
-        // the PIN became stale).
         setPin('');
+      }
+      if (data.verify_token_present === false) {
+        toast.warning(
+          'No webhook verify token is stored. Set one here and the same value in Meta App → WhatsApp → Configuration → Webhook.',
+          { duration: 12000 },
+        );
       }
 
       if (accountId) await fetchConfig(accountId);
@@ -292,6 +303,9 @@ export function WhatsAppConfig() {
             ? `Connected to ${payload.phone_info.verified_name}`
             : 'API connection successful'
         );
+        if (payload.waba_error) {
+          toast.error(payload.waba_error, { duration: 10000 });
+        }
       } else {
         setConnectionStatus('disconnected');
         setResetReason(payload.needs_reset ? 'token_corrupted' : payload.reason === 'meta_api_error' ? 'meta_api_error' : null);
@@ -317,14 +331,18 @@ export function WhatsAppConfig() {
       const data = (await res.json()) as RegistrationProbe;
       setRegistrationProbe(data);
       if (data.live) {
-        toast.success('Number is fully wired — Meta is delivering events.');
+        toast.success(
+          data.backfilled
+            ? 'Meta already has this number live — registration status was updated.'
+            : 'Number is fully wired — Meta is delivering events.',
+        );
       } else {
         toast.error(
           'Number is not fully registered. See the checks below for which step failed.',
           { duration: 8000 },
         );
       }
-      if (accountId) await fetchConfig(accountId);
+      if (accountId) await fetchConfig(accountId, { preserveProbe: true });
     } catch (err) {
       console.error('verify-registration failed:', err);
       toast.error('Could not reach the verification endpoint.');
@@ -355,6 +373,7 @@ export function WhatsAppConfig() {
       setAccessToken('');
       setVerifyToken('');
       setTokenEdited(false);
+      setVerifyTokenEdited(false);
       setConnectionStatus('disconnected');
       setResetReason(null);
       setStatusMessage('');
@@ -622,18 +641,23 @@ export function WhatsAppConfig() {
               <Input
                 placeholder={t('webhookVerifyTokenPlaceholder')}
                 value={verifyToken}
-                onChange={(e) => setVerifyToken(e.target.value)}
+                onChange={(e) => {
+                  setVerifyToken(e.target.value);
+                  setVerifyTokenEdited(true);
+                }}
                 className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
               />
               <p className="text-xs text-muted-foreground">
-                {t('webhookVerifyTokenHint')}
+                {config?.verify_token && !verifyTokenEdited
+                  ? t('verifyTokenSaved')
+                  : t('webhookVerifyTokenHint')}
               </p>
             </div>
 
             <div className="space-y-2">
               <Label className="text-muted-foreground">
                 {t('twoStepPin')}
-                <span className="ml-1 text-muted-foreground">{t('optional')}</span>
+                <span className="ml-1 text-muted-foreground">{t('pinRequiredHint')}</span>
               </Label>
               <Input
                 type="text"
@@ -679,6 +703,12 @@ export function WhatsAppConfig() {
                   <Copy className="size-4" />
                 </Button>
               </div>
+              {typeof window !== 'undefined' &&
+                /localhost|127\.0\.0\.1/.test(window.location.hostname) && (
+                  <p className="text-xs text-amber-700 dark:text-amber-300">
+                    {t('webhookLocalhostWarning')}
+                  </p>
+                )}
             </div>
           </CardContent>
         </Card>

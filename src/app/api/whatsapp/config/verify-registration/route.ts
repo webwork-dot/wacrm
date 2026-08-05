@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import {
   getSubscribedApps,
+  canInferCloudApiRegistration,
   verifyPhoneNumber,
 } from '@/lib/whatsapp/meta-api'
 
@@ -98,10 +99,11 @@ export async function GET() {
     locally_marked_registered: config.registered_at != null,
   }
   const errors: string[] = []
+  let phoneInfo: Awaited<ReturnType<typeof verifyPhoneNumber>> | null = null
 
   // 1. Phone metadata
   try {
-    await verifyPhoneNumber({
+    phoneInfo = await verifyPhoneNumber({
       phoneNumberId: config.phone_number_id,
       accessToken,
     })
@@ -140,6 +142,39 @@ export async function GET() {
     )
   }
 
+  let registeredAt = config.registered_at ?? null
+  let backfilled = false
+
+  // If Meta already shows the number live and the WABA is subscribed,
+  // persist registered_at so the Settings banner stops lying.
+  if (
+    !checks.locally_marked_registered &&
+    checks.phone_metadata_ok &&
+    checks.waba_subscribed_to_app &&
+    phoneInfo &&
+    canInferCloudApiRegistration(phoneInfo)
+  ) {
+    const now = new Date().toISOString()
+    const { error: backfillError } = await supabase
+      .from('whatsapp_config')
+      .update({
+        registered_at: now,
+        last_registration_error: null,
+        status: 'connected',
+        connected_at: config.connected_at ?? now,
+      })
+      .eq('account_id', accountId)
+    if (!backfillError) {
+      registeredAt = now
+      checks.locally_marked_registered = true
+      backfilled = true
+    } else {
+      errors.push(
+        `Could not save registration status locally: ${backfillError.message}`,
+      )
+    }
+  }
+
   const live =
     checks.phone_metadata_ok &&
     (checks.waba_subscribed_to_app ?? false) &&
@@ -149,8 +184,12 @@ export async function GET() {
     live,
     checks,
     errors,
-    last_registration_error: config.last_registration_error ?? null,
-    registered_at: config.registered_at ?? null,
+    backfilled,
+    last_registration_error: backfilled
+      ? null
+      : config.last_registration_error ?? null,
+    registered_at: registeredAt,
     subscribed_apps_at: config.subscribed_apps_at ?? null,
+    phone_status: phoneInfo?.status ?? null,
   })
 }

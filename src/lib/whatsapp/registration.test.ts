@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getSubscribedApps,
+  canInferCloudApiRegistration,
+  isCloudApiConnected,
   registerPhoneNumber,
   subscribeWabaToApp,
+  verifyPhoneNumber,
 } from './meta-api';
 
 function okResponse(body: unknown): Response {
@@ -18,6 +21,51 @@ function errorResponse(status: number, body: unknown): Response {
     headers: { 'content-type': 'application/json' },
   });
 }
+
+describe('isCloudApiConnected', () => {
+  it('is true only for CONNECTED (any case)', () => {
+    expect(isCloudApiConnected({ status: 'CONNECTED' })).toBe(true);
+    expect(isCloudApiConnected({ status: 'connected' })).toBe(true);
+    expect(isCloudApiConnected({ status: 'PENDING' })).toBe(false);
+    expect(isCloudApiConnected({ status: undefined })).toBe(false);
+  });
+});
+
+describe('canInferCloudApiRegistration', () => {
+  it('infers whenever Meta reports CONNECTED (PIN UI is optional)', () => {
+    expect(canInferCloudApiRegistration({ status: 'CONNECTED' })).toBe(true);
+    expect(
+      canInferCloudApiRegistration({ status: 'CONNECTED' }),
+    ).toBe(true);
+    expect(canInferCloudApiRegistration({ status: 'PENDING' })).toBe(false);
+  });
+});
+
+describe('verifyPhoneNumber', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue(
+      okResponse({
+        id: 'PNID',
+        display_phone_number: '+1 555',
+        status: 'CONNECTED',
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('requests status fields used to infer registration', async () => {
+    await verifyPhoneNumber({ phoneNumberId: 'PNID', accessToken: 'tok' });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toContain('/PNID?');
+    expect(url).toContain('status');
+    expect(url).toContain('is_pin_enabled');
+    expect(init.headers.Authorization).toBe('Bearer tok');
+  });
+});
 
 describe('registerPhoneNumber', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
