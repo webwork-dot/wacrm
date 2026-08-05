@@ -4,7 +4,7 @@ import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
-import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
+import { debugMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
@@ -168,64 +168,139 @@ export async function GET(request: Request) {
   }
 }
 
+function webhookDebug(section: string, data?: unknown) {
+  console.log(`[webhook-debug] ${section}`)
+  if (data !== undefined) {
+    try {
+      console.log(typeof data === 'string' ? data : JSON.stringify(data, null, 2))
+    } catch {
+      console.log(data)
+    }
+  }
+}
+
 // POST - Receive messages
 export async function POST(request: Request) {
   // Read raw body first so we can HMAC-verify the exact bytes Meta
   // signed. request.json() would re-encode and break the signature.
   const rawBody = await request.text()
   const signature = request.headers.get('x-hub-signature-256')
+  const headerObj = Object.fromEntries(request.headers.entries())
 
-  if (!verifyMetaWebhookSignature(rawBody, signature)) {
-    // 401 (not 200) — we want Meta's delivery dashboard to show failures
-    // loudly if a misconfiguration causes signatures to stop matching,
-    // rather than silently eating events.
-    console.warn('[webhook] rejected request with invalid signature')
+  webhookDebug('=========================')
+  webhookDebug('INCOMING WEBHOOK')
+  webhookDebug('=========================')
+  webhookDebug('Timestamp', new Date().toISOString())
+  webhookDebug('Environment', {
+    NODE_ENV: process.env.NODE_ENV,
+    NEXT_RUNTIME: process.env.NEXT_RUNTIME ?? '(node — unset)',
+    NETLIFY: process.env.NETLIFY ?? null,
+    VERCEL: process.env.VERCEL ?? null,
+    AWS_LAMBDA_FUNCTION_NAME: process.env.AWS_LAMBDA_FUNCTION_NAME ?? null,
+    afterIsFunction: typeof after === 'function',
+    // Phase-2 debug: sync processing is ON unless WHATSAPP_WEBHOOK_USE_AFTER=1
+    syncProcessWebhook: process.env.WHATSAPP_WEBHOOK_USE_AFTER !== '1',
+  })
+  webhookDebug('Headers', headerObj)
+  webhookDebug('Signature header', signature)
+  webhookDebug('Raw body', rawBody)
+
+  const sig = debugMetaWebhookSignature(rawBody, signature)
+  webhookDebug('Signature check', {
+    'App Secret loaded?': sig.secretLoaded,
+    secretLength: sig.secretLength,
+    'Signature header': sig.signatureHeader,
+    'Calculated signature': sig.calculatedSignature,
+    'Signature Match?': sig.match,
+    WHY: sig.reason,
+  })
+
+  if (!sig.ok) {
+    webhookDebug('RETURN: Signature failed', sig.reason)
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
   }
 
-  let body: { entry?: WhatsAppWebhookEntry[] }
+  let body: { object?: string; entry?: WhatsAppWebhookEntry[] }
   try {
     body = JSON.parse(rawBody)
-  } catch {
+  } catch (err) {
+    webhookDebug('RETURN: Invalid JSON', err instanceof Error ? err.message : err)
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
-  // Process AFTER the response so we ack Meta within their ~20s timeout
-  // (a slow ack triggers Meta retries + duplicate inserts), while still
-  // guaranteeing the work runs to completion.
-  //
-  // This MUST use `after()` rather than a detached `processWebhook(body)`
-  // promise: on serverless platforms (we run on Vercel) the function can
-  // be frozen or terminated the moment the response is sent, so a floating
-  // promise's DB writes are not guaranteed to finish. That dropped a
-  // non-deterministic *subset* of inbound messages — contacts/conversations
-  // were created but the message insert never landed, leaving conversations
-  // that show in the inbox with an empty thread, and no logs to explain it
-  // (see issue #301). `after()` hands the callback to the runtime, which
-  // keeps the function alive until it resolves (within the route's
-  // maxDuration).
-  after(async () => {
-    try {
-      await processWebhook(body)
-    } catch (error) {
-      console.error('Error processing webhook:', error)
-    }
+  webhookDebug('Parsed payload overview', {
+    object: body.object ?? null,
+    entryCount: body.entry?.length ?? 0,
+    entry: (body.entry ?? []).map((entry) => ({
+      id: entry.id,
+      changes: entry.changes?.map((change) => ({
+        field: change.field,
+        metadata: change.value?.metadata ?? null,
+        phone_number_id: change.value?.metadata?.phone_number_id ?? null,
+        contacts: change.value?.contacts ?? null,
+        messages: change.value?.messages ?? null,
+        statuses: change.value?.statuses ?? null,
+      })),
+    })),
   })
+  webhookDebug('Full parsed JSON', body)
+
+  // Phase-2 debug (Step 10): await processing so we can prove whether
+  // after() drops work on this host. Restore after() with
+  // WHATSAPP_WEBHOOK_USE_AFTER=1 — do not leave sync mode permanently.
+  try {
+    if (process.env.WHATSAPP_WEBHOOK_USE_AFTER === '1') {
+      webhookDebug('Dispatch via after()')
+      after(async () => {
+        try {
+          await processWebhook(body)
+        } catch (error) {
+          webhookDebug('RETURN: processWebhook threw inside after()', error)
+          console.error('Error processing webhook:', error)
+        }
+      })
+    } else {
+      webhookDebug('Dispatch via await processWebhook (DEBUG SYNC MODE)')
+      await processWebhook(body)
+    }
+  } catch (error) {
+    webhookDebug('RETURN: processWebhook threw', error)
+    console.error('Error processing webhook:', error)
+  }
 
   return NextResponse.json({ status: 'received' }, { status: 200 })
 }
 
 async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
-  if (!body.entry) return
+  webhookDebug('processWebhook START')
+  if (!body.entry) {
+    webhookDebug('RETURN: No entry')
+    return
+  }
+  if (!Array.isArray(body.entry) || body.entry.length === 0) {
+    webhookDebug('RETURN: No entry rows')
+    return
+  }
 
   for (const entry of body.entry) {
+    if (!entry.changes || entry.changes.length === 0) {
+      webhookDebug('RETURN: No changes', { entryId: entry.id })
+      continue
+    }
+
     for (const change of entry.changes) {
+      webhookDebug('Change field', {
+        entryId: entry.id,
+        field: change.field,
+      })
+
       // Template-lifecycle events (status / quality / components
       // updates from Meta) come in on a different change.field and
       // have a different value shape — route them through the
       // dedicated handler. Skip the messaging branches below so we
       // don't try to read message-shaped fields off a template event.
       if (isTemplateWebhookField(change.field)) {
+        webhookDebug('Template webhook field — not an inbox message', change.field)
         await handleTemplateWebhookChange(
           { field: change.field, value: change.value as unknown },
           supabaseAdmin(),
@@ -237,15 +312,34 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
 
       // Handle status updates
       if (value.statuses) {
+        webhookDebug('Status updates (not inbox text)', value.statuses)
         for (const status of value.statuses) {
           await handleStatusUpdate(status)
         }
       }
 
       // Handle incoming messages
-      if (!value.messages || !value.contacts) continue
+      if (!value.messages) {
+        webhookDebug('RETURN: No messages', {
+          field: change.field,
+          hasStatuses: Boolean(value.statuses),
+          hasContacts: Boolean(value.contacts),
+        })
+        continue
+      }
+      if (!value.contacts) {
+        webhookDebug('RETURN: No contacts', {
+          field: change.field,
+          messageCount: value.messages.length,
+        })
+        continue
+      }
 
       const phoneNumberId = value.metadata.phone_number_id
+      webhookDebug('DB lookup whatsapp_config', {
+        sql: 'select * from whatsapp_config where phone_number_id = $1',
+        'Meta phone_number_id': phoneNumberId,
+      })
 
       // Find user's config by phone_number_id. `.single()` returns
       // PGRST116 for both 0 rows AND ≥2 rows — distinguish them so
@@ -257,7 +351,22 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
         .select('*')
         .eq('phone_number_id', phoneNumberId)
 
+      const allIds = (configRows ?? []).map(
+        (r: { id: string; phone_number_id: string; account_id: string; user_id: string }) => ({
+          config_id: r.id,
+          phone_number_id: r.phone_number_id,
+          account_id: r.account_id,
+          user_id: r.user_id,
+        }),
+      )
+      webhookDebug('DB lookup result', {
+        rowsReturned: configRows?.length ?? 0,
+        configError: configError ?? null,
+        rows: allIds,
+      })
+
       if (configError) {
+        webhookDebug('RETURN: Config query error', configError)
         console.error(
           'Error fetching whatsapp_config for phone_number_id:',
           phoneNumberId,
@@ -267,11 +376,16 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       }
 
       if (!configRows || configRows.length === 0) {
+        webhookDebug('RETURN: No config', {
+          'Meta phone_number_id': phoneNumberId,
+          hint: 'Compare to whatsapp_config.phone_number_id in Supabase',
+        })
         console.error('No config found for phone_number_id:', phoneNumberId)
         continue
       }
 
       if (configRows.length > 1) {
+        webhookDebug('RETURN: Duplicate config', allIds)
         console.error(
           `Multiple configs (${configRows.length}) found for phone_number_id:`,
           phoneNumberId,
@@ -283,12 +397,34 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       }
 
       const config = configRows[0]
+      webhookDebug('Config matched', {
+        config_id: config.id,
+        account_id: config.account_id,
+        user_id: config.user_id,
+        'Database phone_number_id': config.phone_number_id,
+        'Meta phone_number_id': phoneNumberId,
+        idsEqual: config.phone_number_id === phoneNumberId,
+      })
 
-      const decryptedAccessToken = decrypt(config.access_token)
+      let decryptedAccessToken: string
+      try {
+        decryptedAccessToken = decrypt(config.access_token)
+        webhookDebug('Decrypt access token: ok')
+      } catch (err) {
+        webhookDebug('RETURN: Decrypt failed', err instanceof Error ? err.message : err)
+        continue
+      }
 
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]
         const contact = value.contacts[i] || value.contacts[0]
+        webhookDebug('Dispatch processMessage', {
+          index: i,
+          messageId: message.id,
+          messageType: message.type,
+          from: message.from,
+          contact,
+        })
 
         await processMessage(
           message,
@@ -305,6 +441,7 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       }
     }
   }
+  webhookDebug('processWebhook END')
 }
 
 // The happy-path status ladder — pending → sent → delivered → read →
@@ -570,27 +707,56 @@ async function processMessage(
   configOwnerUserId: string,
   accessToken: string
 ) {
+  webhookDebug('START processMessage', {
+    messageId: message.id,
+    messageType: message.type,
+    from: message.from,
+    accountId,
+  })
+
   const senderPhone = normalizePhone(message.from)
   const contactName = contact.profile.name
 
   // Find or create contact
+  webhookDebug('Contact lookup', { senderPhone, contactName, accountId })
   const contactOutcome = await findOrCreateContact(
     accountId,
     configOwnerUserId,
     senderPhone,
     contactName
   )
-  if (!contactOutcome) return
+  if (!contactOutcome) {
+    webhookDebug('RETURN: Contact failed', { senderPhone, accountId })
+    return
+  }
   const contactRecord = contactOutcome.contact
+  webhookDebug('Contact lookup ok', {
+    contactId: contactRecord.id,
+    wasCreated: contactOutcome.wasCreated,
+  })
 
   // Find or create conversation
+  webhookDebug('Conversation lookup', {
+    accountId,
+    contactId: contactRecord.id,
+  })
   const convResult = await findOrCreateConversation(
     accountId,
     configOwnerUserId,
     contactRecord.id
   )
-  if (!convResult) return
+  if (!convResult) {
+    webhookDebug('RETURN: Conversation failed', {
+      accountId,
+      contactId: contactRecord.id,
+    })
+    return
+  }
   const conversation = convResult.conversation
+  webhookDebug('Conversation lookup ok', {
+    conversationId: conversation.id,
+    created: convResult.created,
+  })
 
   // Emit conversation.created as soon as the thread is opened — BEFORE
   // the reaction short-circuit below — so a conversation first opened by
@@ -607,13 +773,21 @@ async function processMessage(
   // into `messages`, never bump unread_count, never update last_message_text.
   // Done before parseMessageContent so the media-URL fetch is skipped.
   if (message.type === 'reaction') {
+    webhookDebug('Reaction payload — no messages insert')
     await handleReaction(message, conversation.id, contactRecord.id)
+    webhookDebug('END processMessage (reaction)')
     return
   }
 
   // Parse message content based on type
   const { contentText, mediaUrl, mediaType, interactiveReplyId } =
     await parseMessageContent(message, accessToken)
+  webhookDebug('Parsed content', {
+    contentText,
+    mediaUrl,
+    mediaType,
+    interactiveReplyId,
+  })
 
   // Resolve swipe-reply context if present. A missing parent is fine —
   // we just store NULL and the UI renders the message without a quote.
@@ -666,6 +840,12 @@ async function processMessage(
     .eq('sender_type', 'customer')
   const isFirstInboundMessage = (priorCustomerMsgCount ?? 0) === 0
 
+  webhookDebug('Insert message', {
+    conversation_id: conversation.id,
+    sender_type: 'customer',
+    content_type: contentType,
+    message_id: message.id,
+  })
   const { error: msgError } = await supabaseAdmin().from('messages').insert({
     conversation_id: conversation.id,
     sender_type: 'customer',
@@ -683,11 +863,34 @@ async function processMessage(
   })
 
   if (msgError) {
+    webhookDebug('RETURN: Message insert failed', msgError)
     console.error('Error inserting message:', msgError)
     return
   }
 
+  const { data: insertedRows, error: insertedLookupError } = await supabaseAdmin()
+    .from('messages')
+    .select('*')
+    .eq('conversation_id', conversation.id)
+    .eq('message_id', message.id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+
+  if (insertedLookupError || !insertedRows?.length) {
+    webhookDebug('RETURN: Inserted message not found on re-select', {
+      insertedLookupError,
+      message_id: message.id,
+      conversation_id: conversation.id,
+    })
+    return
+  }
+  webhookDebug('Inserted message row', insertedRows[0])
+  webhookDebug(
+    'Realtime publish: server does not emit events directly. Supabase postgres_changes should fire on public.messages INSERT if the table is in publication supabase_realtime. Watch browser console for [inbox-realtime].',
+  )
+
   // Update conversation
+  webhookDebug('Conversation update', { conversationId: conversation.id })
   const { error: convError } = await supabaseAdmin()
     .from('conversations')
     .update({
@@ -699,6 +902,7 @@ async function processMessage(
     .eq('id', conversation.id)
 
   if (convError) {
+    webhookDebug('RETURN: Conversation update failed (message already inserted)', convError)
     console.error('Error updating conversation:', convError)
   }
 
@@ -823,6 +1027,10 @@ async function processMessage(
     whatsapp_message_id: message.id,
     content_type: contentType,
     text: contentText,
+  })
+  webhookDebug('END processMessage', {
+    conversationId: conversation.id,
+    messageId: message.id,
   })
 }
 

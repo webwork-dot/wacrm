@@ -22,6 +22,22 @@ export function verifyMetaWebhookSignature(
   rawBody: string,
   signatureHeader: string | null,
 ): boolean {
+  return debugMetaWebhookSignature(rawBody, signatureHeader).ok
+}
+
+/** Phase-2 inbound debug — explains signature pass/fail without logging the secret. */
+export function debugMetaWebhookSignature(
+  rawBody: string,
+  signatureHeader: string | null,
+): {
+  ok: boolean
+  reason: string | null
+  secretLoaded: boolean
+  secretLength: number
+  signatureHeader: string | null
+  calculatedSignature: string | null
+  match: boolean
+} {
   const secret = process.env.META_APP_SECRET
   if (!secret) {
     console.error(
@@ -29,19 +45,68 @@ export function verifyMetaWebhookSignature(
         'Configure the env var (Meta → App Settings → Basic → App Secret) ' +
         'to enable signature verification.',
     )
-    return false
+    return {
+      ok: false,
+      reason: 'META_APP_SECRET is not set',
+      secretLoaded: false,
+      secretLength: 0,
+      signatureHeader,
+      calculatedSignature: null,
+      match: false,
+    }
   }
 
-  if (!signatureHeader) return false
-  if (!signatureHeader.startsWith('sha256=')) return false
+  if (!signatureHeader) {
+    return {
+      ok: false,
+      reason: 'Missing X-Hub-Signature-256 header',
+      secretLoaded: true,
+      secretLength: secret.length,
+      signatureHeader: null,
+      calculatedSignature: null,
+      match: false,
+    }
+  }
 
-  const expected =
+  if (!signatureHeader.startsWith('sha256=')) {
+    return {
+      ok: false,
+      reason: 'Header does not start with sha256=',
+      secretLoaded: true,
+      secretLength: secret.length,
+      signatureHeader,
+      calculatedSignature: null,
+      match: false,
+    }
+  }
+
+  const calculatedSignature =
     'sha256=' +
     crypto.createHmac('sha256', secret).update(rawBody).digest('hex')
 
-  const a = Buffer.from(signatureHeader)
-  const b = Buffer.from(expected)
-  // Bail if lengths differ — timingSafeEqual throws otherwise.
-  if (a.length !== b.length) return false
-  return crypto.timingSafeEqual(a, b)
+  if (signatureHeader.length !== calculatedSignature.length) {
+    return {
+      ok: false,
+      reason: `Signature length mismatch (header=${signatureHeader.length} calculated=${calculatedSignature.length})`,
+      secretLoaded: true,
+      secretLength: secret.length,
+      signatureHeader,
+      calculatedSignature,
+      match: false,
+    }
+  }
+
+  const match = crypto.timingSafeEqual(
+    Buffer.from(signatureHeader),
+    Buffer.from(calculatedSignature),
+  )
+  return {
+    ok: match,
+    reason: match ? null : 'HMAC mismatch — wrong META_APP_SECRET or body altered',
+    secretLoaded: true,
+    secretLength: secret.length,
+    signatureHeader,
+    calculatedSignature,
+    match,
+  }
 }

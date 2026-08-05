@@ -50,6 +50,14 @@ export function useRealtime({
         "postgres_changes",
         { event: "*", schema: "public", table: "messages" },
         (payload) => {
+          console.log("[inbox-realtime] messages event received", {
+            eventType: payload.eventType,
+            id: (payload.new as Message | undefined)?.id,
+            conversation_id: (payload.new as Message | undefined)
+              ?.conversation_id,
+            sender_type: (payload.new as Message | undefined)?.sender_type,
+            message_id: (payload.new as Message | undefined)?.message_id,
+          });
           onMessageRef.current?.({
             eventType: payload.eventType as RealtimeEvent<Message>["eventType"],
             new: payload.new as Message,
@@ -69,6 +77,7 @@ export function useRealtime({
         }
       )
       .subscribe((status) => {
+        console.log("[inbox-realtime] subscription status", status, channelName);
         setIsConnected(status === "SUBSCRIBED");
       });
 
