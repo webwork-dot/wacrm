@@ -40,7 +40,7 @@ That's **read-only** — the safe default. To let the assistant change
 data or send messages, add `"WACRM_ENABLE_WRITES": "true"` (and
 `"WACRM_ENABLE_BROADCASTS": "true"` for mass sends) to `env`.
 
-## What it exposes
+## What it exposes 
 
 - **Reads (always on):** `whoami`, contacts (list/get), conversations
   (list/get), messages (list), broadcast status.
