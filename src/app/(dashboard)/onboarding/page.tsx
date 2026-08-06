@@ -10,7 +10,7 @@ import {
   Rocket,
   ArrowRight,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import {
   Card,
   CardContent,
@@ -19,6 +19,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import type { OnboardingStatus } from '@/lib/platform/onboarding';
+import { cn } from '@/lib/utils';
 
 export default function OnboardingPage() {
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
@@ -104,11 +105,12 @@ export default function OnboardingPage() {
             <CardDescription>{next.description}</CardDescription>
           </CardHeader>
           <CardContent>
-            <Button asChild>
-              <Link href={next.href}>
-                {next.title} <ArrowRight className="ml-2 h-4 w-4" />
-              </Link>
-            </Button>
+            <Link
+              href={next.href}
+              className={cn(buttonVariants({ variant: 'default' }))}
+            >
+              {next.title} <ArrowRight className="ml-2 h-4 w-4" />
+            </Link>
           </CardContent>
         </Card>
       )}
@@ -129,9 +131,12 @@ export default function OnboardingPage() {
               <p className="text-sm text-muted-foreground">{step.description}</p>
             </div>
             {!step.done && (
-              <Button asChild variant="outline" size="sm">
-                <Link href={step.href}>Open</Link>
-              </Button>
+              <Link
+                href={step.href}
+                className={cn(buttonVariants({ variant: 'outline', size: 'sm' }))}
+              >
+                Open
+              </Link>
             )}
           </li>
         ))}
@@ -146,9 +151,12 @@ export default function OnboardingPage() {
           {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           {status.completed ? 'Completed' : 'Mark onboarding complete'}
         </Button>
-        <Button asChild variant="ghost">
-          <Link href="/starter-kits">Browse Starter Kits</Link>
-        </Button>
+        <Link
+          href="/starter-kits"
+          className={cn(buttonVariants({ variant: 'ghost' }))}
+        >
+          Browse Starter Kits
+        </Link>
       </div>
     </div>
   );

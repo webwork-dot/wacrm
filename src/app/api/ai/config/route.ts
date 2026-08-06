@@ -83,8 +83,9 @@ export async function GET() {
       configured: true,
       has_key: !!api_key,
       has_embeddings_key: !!embeddings_api_key,
-      studio_profile: (safe as { studio_profile?: unknown }).studio_profile ?? {},
       ...safe,
+      studio_profile:
+        (safe as { studio_profile?: unknown }).studio_profile ?? {},
     })
   } catch (err) {
     return toErrorResponse(err)

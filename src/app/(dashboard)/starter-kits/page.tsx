@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { toast } from 'sonner';
 import { Loader2, Package, Check } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import {
   Card,
   CardContent,
@@ -12,6 +12,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import { cn } from '@/lib/utils';
 
 interface KitSummary {
   slug: string;
@@ -138,9 +139,14 @@ export default function StarterKitsPage() {
                     )}
                     Install
                   </Button>
-                  <Button asChild size="sm" variant="ghost">
-                    <Link href="/flows">Open flows</Link>
-                  </Button>
+                  <Link
+                    href="/flows"
+                    className={cn(
+                      buttonVariants({ size: 'sm', variant: 'ghost' }),
+                    )}
+                  >
+                    Open flows
+                  </Link>
                 </div>
               </CardContent>
             </Card>
