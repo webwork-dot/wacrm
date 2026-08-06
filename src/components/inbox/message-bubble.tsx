@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import type { Message, MessageReaction } from "@/types";
 import {
@@ -67,79 +67,189 @@ function statusLabel(
   }
 }
 
-function MediaUnavailable({ label, t }: { label: string, t: ReturnType<typeof useTranslations> }) {
+function MediaUnavailable({
+  label,
+  t,
+  onPrimary,
+}: {
+  label: string;
+  t: ReturnType<typeof useTranslations>;
+  onPrimary?: boolean;
+}) {
   return (
-    <div className="flex items-center gap-2 rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-      <ImageOff className="h-4 w-4 shrink-0 text-muted-foreground" />
+    <div
+      className={cn(
+        "flex h-40 w-60 items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs",
+        onPrimary
+          ? "bg-primary-foreground/15 text-primary-foreground/80"
+          : "bg-muted/40 text-muted-foreground",
+      )}
+    >
+      <ImageOff className="h-4 w-4 shrink-0" />
       <span>{t("unavailable", { label })}</span>
     </div>
   );
 }
 
-function MediaImage({ url, alt }: { url: string; alt: string }) {
+/**
+ * Renders inbound (Meta proxy) and outbound (Supabase public) chat images.
+ * Outbound bubbles sit on `bg-primary`, so we always frame media on a
+ * neutral surface — otherwise a slow/failed load looks like a blank
+ * purple rectangle (the bubble showing through an empty <img>).
+ */
+function MediaImage({
+  url,
+  alt,
+  onPrimary,
+}: {
+  url: string;
+  alt: string;
+  onPrimary?: boolean;
+}) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
+  const blobRef = useRef<string | null>(null);
 
-  const loadImage = useCallback(async () => {
-    if (!url) return;
-
-    // Proxy URLs need auth fetch to create blob URL
-    if (url.startsWith("/api/whatsapp/media/")) {
-      try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error("Failed to load media");
-        const blob = await res.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        setSrc(blobUrl);
-      } catch {
-        setError(true);
-      } finally {
-        setLoading(false);
-      }
-    } else {
-      setSrc(url);
-      setLoading(false);
-    }
-  }, [url]);
+  const frameClass = onPrimary
+    ? "bg-primary-foreground/15"
+    : "bg-muted";
 
   useEffect(() => {
-    loadImage();
-    return () => {
-      if (src?.startsWith("blob:")) {
-        URL.revokeObjectURL(src);
+    let cancelled = false;
+
+    const revokeBlob = () => {
+      if (blobRef.current) {
+        URL.revokeObjectURL(blobRef.current);
+        blobRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadImage]);
+
+    (async () => {
+      if (!url) {
+        if (!cancelled) {
+          setError(true);
+          setLoading(false);
+        }
+        return;
+      }
+
+      if (!cancelled) {
+        setError(false);
+        setLoading(true);
+        setSrc(null);
+      }
+
+      const isProxy = url.startsWith("/api/whatsapp/media/");
+      const shouldFetch =
+        isProxy ||
+        url.includes("/storage/v1/object/public/") ||
+        url.includes("/storage/v1/object/sign/");
+
+      if (shouldFetch) {
+        try {
+          const res = await fetch(url, {
+            credentials: isProxy ? "same-origin" : "omit",
+            referrerPolicy: "no-referrer",
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          if (cancelled) return;
+          // Accept image/* ; some CDNs omit content-type on public objects.
+          if (blob.size === 0) throw new Error("Empty media body");
+          revokeBlob();
+          const blobUrl = URL.createObjectURL(blob);
+          blobRef.current = blobUrl;
+          setSrc(blobUrl);
+          setLoading(false);
+          return;
+        } catch {
+          if (isProxy) {
+            if (!cancelled) {
+              setError(true);
+              setLoading(false);
+            }
+            return;
+          }
+          // Public URL: fall through to direct <img>.
+        }
+      }
+
+      if (!cancelled) {
+        setSrc(url);
+        // Spinner stays until onLoad / onError.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      revokeBlob();
+    };
+  }, [url]);
 
   if (error) {
     return (
-      <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-muted">
-        <ImageOff className="h-8 w-8 text-muted-foreground" />
+      <div
+        className={cn(
+          "flex h-40 w-60 items-center justify-center rounded-lg",
+          frameClass,
+        )}
+      >
+        <ImageOff
+          className={cn(
+            "h-8 w-8",
+            onPrimary ? "text-primary-foreground/70" : "text-muted-foreground",
+          )}
+        />
       </div>
     );
   }
 
-  if (loading) {
+  if (loading && !src) {
     return (
-      <div className="flex h-40 w-60 items-center justify-center rounded-lg bg-muted">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      <div
+        className={cn(
+          "flex h-40 w-60 items-center justify-center rounded-lg",
+          frameClass,
+        )}
+      >
+        <div
+          className={cn(
+            "h-5 w-5 animate-spin rounded-full border-2 border-t-transparent",
+            onPrimary ? "border-primary-foreground" : "border-primary",
+          )}
+        />
       </div>
     );
   }
 
   return (
-    <img
-      src={src ?? ""}
-      alt={alt}
-      className="max-h-64 max-w-60 rounded-lg object-cover"
-      onError={() => setError(true)}
-    />
+    <div className={cn("inline-block overflow-hidden rounded-lg", frameClass)}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src ?? ""}
+        alt={alt}
+        referrerPolicy="no-referrer"
+        className="max-h-64 max-w-60 object-cover"
+        onLoad={() => setLoading(false)}
+        onError={() => {
+          setError(true);
+          setLoading(false);
+        }}
+      />
+    </div>
   );
 }
 
-function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof useTranslations> }) {
+function MessageContent({
+  message,
+  t,
+  onPrimary,
+}: {
+  message: Message;
+  t: ReturnType<typeof useTranslations>;
+  onPrimary?: boolean;
+}) {
   switch (message.content_type) {
     case "text":
       return (
@@ -152,9 +262,13 @@ function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof
       return (
         <div>
           {message.media_url ? (
-            <MediaImage url={message.media_url} alt="Shared image" />
+            <MediaImage
+              url={message.media_url}
+              alt="Shared image"
+              onPrimary={onPrimary}
+            />
           ) : (
-            <MediaUnavailable label={t("photo")} t={t} />
+            <MediaUnavailable label={t("photo")} t={t} onPrimary={onPrimary} />
           )}
           {message.content_text && (
             <p className="mt-1 whitespace-pre-wrap break-words text-sm">
@@ -171,10 +285,11 @@ function MessageContent({ message, t }: { message: Message, t: ReturnType<typeof
             <video
               src={message.media_url}
               controls
-              className="max-h-64 max-w-60 rounded-lg"
+              playsInline
+              className="max-h-64 max-w-60 rounded-lg bg-black/20"
             />
           ) : (
-            <MediaUnavailable label={t("video")} t={t} />
+            <MediaUnavailable label={t("video")} t={t} onPrimary={onPrimary} />
           )}
           {message.content_text && (
             <p className="mt-1 whitespace-pre-wrap break-words text-sm">
@@ -315,7 +430,7 @@ export function MessageBubble({
             onPrimary={isAgent}
           />
         )}
-        <MessageContent message={message} t={t} />
+        <MessageContent message={message} t={t} onPrimary={isAgent} />
         <div
           className={cn(
             "mt-1 flex items-center gap-1",

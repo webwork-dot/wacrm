@@ -227,11 +227,17 @@ function InboxPageInner() {
           setMessages((prev) => {
             // Avoid duplicates
             if (prev.some((m) => m.id === newMsg.id)) return prev;
-            // Replace optimistic message if it exists
+            // Carry media_url forward if the realtime row omitted it
+            // (rare) but the optimistic bubble already had the public URL.
+            const optimistic = prev.find((m) => m.id.startsWith("temp-"));
+            const merged: Message = {
+              ...newMsg,
+              media_url: newMsg.media_url || optimistic?.media_url,
+            };
             const withoutOptimistic = prev.filter(
-              (m) => !m.id.startsWith("temp-")
+              (m) => !m.id.startsWith("temp-"),
             );
-            return [...withoutOptimistic, newMsg];
+            return [...withoutOptimistic, merged];
           });
         }
 
@@ -275,9 +281,19 @@ function InboxPageInner() {
       }
 
       if (event.eventType === "UPDATE") {
-        // Update message status
+        // Status webhooks often arrive as partial-looking merges — never
+        // let a null media_url wipe an image we already rendered.
         setMessages((prev) =>
-          prev.map((m) => (m.id === newMsg.id ? { ...m, ...newMsg } : m))
+          prev.map((m) =>
+            m.id === newMsg.id
+              ? {
+                  ...m,
+                  ...newMsg,
+                  media_url: newMsg.media_url ?? m.media_url,
+                  content_text: newMsg.content_text ?? m.content_text,
+                }
+              : m,
+          ),
         );
       }
     },
