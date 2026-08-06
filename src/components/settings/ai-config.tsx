@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { Loader2, Sparkles, CheckCircle2, Trash2, Eye, EyeOff } from 'lucide-react';
+import { Loader2, Sparkles, CheckCircle2, Trash2, Eye, EyeOff, Copy, AlertTriangle } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { canEditSettings } from '@/lib/auth/roles';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,7 @@ import {
   CardTitle,
   CardDescription,
 } from '@/components/ui/card';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Select,
   SelectContent,
@@ -75,6 +76,8 @@ export function AiConfig() {
   // Empty string = leave unassigned (shared queue).
   const [handoffAgentId, setHandoffAgentId] = useState('');
   const [members, setMembers] = useState<AccountMember[]>([]);
+  const [schemaSql, setSchemaSql] = useState<string | null>(null);
+  const [schemaMissing, setSchemaMissing] = useState<string[]>([]);
 
   // Guard keyed on the account (not a bare boolean) so an in-place
   // account switch — ownership transfer, multi-account membership —
@@ -107,12 +110,25 @@ export function AiConfig() {
         setEmbeddingsKey(data.has_embeddings_key ? MASKED_KEY : '');
         setEmbeddingsKeyEdited(false);
       }
+      if (data.schema_needs_migration && canEdit) {
+        void fetch('/api/ai/schema/apply')
+          .then((r) => r.json())
+          .then((probe) => {
+            if (probe.needsMigration) {
+              setSchemaMissing(probe.missing ?? []);
+              setSchemaSql(probe.sql ?? null);
+            }
+          })
+          .catch(() => {
+            /* ignore */
+          });
+      }
     } catch {
       toast.error(t('loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [canEdit, t]);
 
   useEffect(() => {
     if (!accountId || loadedAccountIdRef.current === accountId) return;
@@ -122,7 +138,23 @@ export function AiConfig() {
     // older deployment without the endpoint the picker just shows the
     // queue option.
     void fetchAccountMembers().then(setMembers);
-  }, [accountId, fetchConfig]);
+    if (canEdit) {
+      void fetch('/api/ai/schema/apply')
+        .then((r) => r.json())
+        .then((probe) => {
+          if (probe.needsMigration) {
+            setSchemaMissing(probe.missing ?? []);
+            setSchemaSql(probe.sql ?? null);
+          } else {
+            setSchemaMissing([]);
+            setSchemaSql(null);
+          }
+        })
+        .catch(() => {
+          /* ignore */
+        });
+    }
+  }, [accountId, canEdit, fetchConfig]);
 
   // Swap the model default when the provider changes, unless the user
   // typed a custom model.
@@ -252,6 +284,36 @@ export function AiConfig() {
         <p className="mb-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
           {t('adminOnlyConfig')}
         </p>
+      )}
+
+      {schemaSql && schemaMissing.length > 0 && (
+        <Alert className="mb-4 border-amber-500/40 bg-amber-500/10">
+          <AlertTriangle className="size-4 text-amber-600" />
+          <AlertTitle className="text-amber-900 dark:text-amber-200">
+            {t('schemaMissingTitle')}
+          </AlertTitle>
+          <AlertDescription className="space-y-3 text-amber-900/90 dark:text-amber-100/90">
+            <p>{t('schemaMissingDesc', { columns: schemaMissing.join(', ') })}</p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="border-amber-600/40"
+                onClick={async () => {
+                  await navigator.clipboard.writeText(schemaSql);
+                  toast.success(t('schemaSqlCopied'));
+                }}
+              >
+                <Copy className="size-3.5" />
+                {t('copySchemaSql')}
+              </Button>
+            </div>
+            <pre className="max-h-40 overflow-auto rounded-md border border-amber-600/20 bg-background/60 p-2 text-[11px] leading-relaxed text-foreground">
+              {schemaSql}
+            </pre>
+          </AlertDescription>
+        </Alert>
       )}
 
       <div className="space-y-6">

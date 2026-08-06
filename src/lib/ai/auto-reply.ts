@@ -153,7 +153,25 @@ export async function dispatchInboundToAiReply(
       if (config.handoffAgentId && !conv.assigned_agent_id) {
         update.assigned_agent_id = config.handoffAgentId
       }
-      await db.from('conversations').update(update).eq('id', conversationId)
+      let { error: handoffErr } = await db
+        .from('conversations')
+        .update(update)
+        .eq('id', conversationId)
+      // Migration 033 not applied — retry without ai_handoff_summary.
+      if (
+        handoffErr &&
+        (handoffErr.code === '42703' ||
+          /ai_handoff_summary does not exist/i.test(handoffErr.message))
+      ) {
+        const { ai_handoff_summary: _omit, ...withoutSummary } = update
+        ;({ error: handoffErr } = await db
+          .from('conversations')
+          .update(withoutSummary)
+          .eq('id', conversationId))
+      }
+      if (handoffErr) {
+        console.error('[ai auto-reply] handoff update failed:', handoffErr)
+      }
       return
     }
 

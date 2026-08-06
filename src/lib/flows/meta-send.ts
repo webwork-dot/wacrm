@@ -135,7 +135,25 @@ export async function engineSendText(
     ai_generated: args.aiGenerated ?? false,
   })
   if (msgErr) {
-    throw new Error(`sent to Meta but DB insert failed: ${msgErr.message}`)
+    // Migration 033 not applied — retry without ai_generated.
+    if (
+      msgErr.code === '42703' ||
+      /ai_generated does not exist/i.test(msgErr.message)
+    ) {
+      const { error: retryErr } = await db.from('messages').insert({
+        conversation_id: args.conversationId,
+        sender_type: 'bot',
+        content_type: 'text',
+        content_text: args.text,
+        message_id: waMessageId,
+        status: 'sent',
+      })
+      if (retryErr) {
+        throw new Error(`sent to Meta but DB insert failed: ${retryErr.message}`)
+      }
+    } else {
+      throw new Error(`sent to Meta but DB insert failed: ${msgErr.message}`)
+    }
   }
 
   await db

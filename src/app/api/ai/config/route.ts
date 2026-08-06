@@ -36,6 +36,36 @@ export async function GET() {
       .maybeSingle()
 
     if (error) {
+      // Migration 033 not applied — load without handoff_agent_id.
+      if (
+        error.code === '42703' ||
+        /handoff_agent_id does not exist/i.test(error.message)
+      ) {
+        const legacy = await supabase
+          .from('ai_configs')
+          .select(
+            'provider, model, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, api_key, embeddings_api_key',
+          )
+          .eq('account_id', accountId)
+          .maybeSingle()
+        if (legacy.error) {
+          console.error('[ai/config GET] fetch error:', legacy.error)
+          return NextResponse.json(
+            { error: 'Failed to load AI configuration' },
+            { status: 500 },
+          )
+        }
+        if (!legacy.data) return NextResponse.json({ configured: false })
+        const { api_key, embeddings_api_key, ...safe } = legacy.data
+        return NextResponse.json({
+          configured: true,
+          has_key: !!api_key,
+          has_embeddings_key: !!embeddings_api_key,
+          handoff_agent_id: null,
+          schema_needs_migration: true,
+          ...safe,
+        })
+      }
       console.error('[ai/config GET] fetch error:', error)
       return NextResponse.json(
         { error: 'Failed to load AI configuration' },
@@ -215,32 +245,38 @@ export async function POST(request: Request) {
       shared.embeddings_api_key = null
     }
 
-    if (existing) {
-      const { error: upErr } = await supabase
-        .from('ai_configs')
-        .update(encryptedKey ? { ...shared, api_key: encryptedKey } : shared)
-        .eq('account_id', accountId)
-      if (upErr) {
-        console.error('[ai/config POST] update error:', upErr)
-        return NextResponse.json(
-          { error: 'Failed to save AI configuration' },
-          { status: 500 },
-        )
+    const persist = async (payload: Record<string, unknown>) => {
+      if (existing) {
+        return supabase
+          .from('ai_configs')
+          .update(encryptedKey ? { ...payload, api_key: encryptedKey } : payload)
+          .eq('account_id', accountId)
       }
-    } else {
-      const { error: insErr } = await supabase.from('ai_configs').insert({
+      return supabase.from('ai_configs').insert({
         account_id: accountId,
         created_by: userId,
-        api_key: encryptedKey, // guaranteed non-null: rawKey required when no existing row
-        ...shared,
+        api_key: encryptedKey,
+        ...payload,
       })
-      if (insErr) {
-        console.error('[ai/config POST] insert error:', insErr)
-        return NextResponse.json(
-          { error: 'Failed to save AI configuration' },
-          { status: 500 },
-        )
-      }
+    }
+
+    let { error: saveErr } = await persist(shared)
+    if (
+      saveErr &&
+      (saveErr.code === '42703' ||
+        /handoff_agent_id does not exist/i.test(saveErr.message)) &&
+      'handoff_agent_id' in shared
+    ) {
+      const { handoff_agent_id: _omit, ...withoutHandoff } = shared
+      ;({ error: saveErr } = await persist(withoutHandoff))
+    }
+
+    if (saveErr) {
+      console.error('[ai/config POST] save error:', saveErr)
+      return NextResponse.json(
+        { error: 'Failed to save AI configuration' },
+        { status: 500 },
+      )
     }
 
     return NextResponse.json({ success: true })

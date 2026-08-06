@@ -10,12 +10,23 @@ interface AiConfigRow {
   is_active: boolean
   auto_reply_enabled: boolean
   auto_reply_max_per_conversation: number
-  handoff_agent_id: string | null
+  handoff_agent_id?: string | null
   embeddings_api_key: string | null
 }
 
 const CONFIG_COLUMNS =
   'provider, model, api_key, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, embeddings_api_key'
+
+const CONFIG_COLUMNS_LEGACY =
+  'provider, model, api_key, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, embeddings_api_key'
+
+function isMissingColumnError(err: { code?: string; message?: string } | null): boolean {
+  if (!err) return false
+  return (
+    err.code === '42703' ||
+    /column .* does not exist/i.test(err.message ?? '')
+  )
+}
 
 /**
  * Load and decrypt the account's AI config for *use* (draft or
@@ -34,11 +45,24 @@ export async function loadAiConfig(
   opts: { requireActive?: boolean } = {},
 ): Promise<AiConfig | null> {
   const { requireActive = true } = opts
-  const { data, error } = await db
+  let { data, error } = await db
     .from('ai_configs')
     .select(CONFIG_COLUMNS)
     .eq('account_id', accountId)
     .maybeSingle()
+
+  // Migration 033 not applied yet — retry without handoff_agent_id so
+  // auto-reply / draft keep working until the operator runs the SQL.
+  if (isMissingColumnError(error)) {
+    console.warn(
+      '[ai config] handoff_agent_id missing — apply supabase/migrations/033_ai_reply_polish.sql',
+    )
+    ;({ data, error } = await db
+      .from('ai_configs')
+      .select(CONFIG_COLUMNS_LEGACY)
+      .eq('account_id', accountId)
+      .maybeSingle())
+  }
 
   if (error) throw error
   if (!data) return null
@@ -77,7 +101,7 @@ export async function loadAiConfig(
     isActive: row.is_active,
     autoReplyEnabled: row.auto_reply_enabled,
     autoReplyMaxPerConversation: row.auto_reply_max_per_conversation,
-    handoffAgentId: row.handoff_agent_id,
+    handoffAgentId: row.handoff_agent_id ?? null,
     embeddingsApiKey,
   }
 }
