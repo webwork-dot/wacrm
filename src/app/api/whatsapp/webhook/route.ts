@@ -895,7 +895,7 @@ async function processMessage(
     parseInt(message.timestamp) * 1000,
   ).toISOString()
   webhookDebug('Conversation update', { conversationId: conversation.id })
-  const { error: convError } = await supabaseAdmin()
+  let { error: convError } = await supabaseAdmin()
     .from('conversations')
     .update({
       last_message_text: contentText || `[${message.type}]`,
@@ -905,6 +905,24 @@ async function processMessage(
       updated_at: new Date().toISOString(),
     })
     .eq('id', conversation.id)
+
+  // Migration 037 may not be applied yet — retry without the new column
+  // so unread_count / preview still advance.
+  if (
+    convError &&
+    /last_customer_message_at/i.test(convError.message ?? '')
+  ) {
+    webhookDebug('Conversation update retry without last_customer_message_at')
+    ;({ error: convError } = await supabaseAdmin()
+      .from('conversations')
+      .update({
+        last_message_text: contentText || `[${message.type}]`,
+        last_message_at: customerMessageAt,
+        unread_count: (conversation.unread_count || 0) + 1,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', conversation.id))
+  }
 
   if (convError) {
     webhookDebug('RETURN: Conversation update failed (message already inserted)', convError)

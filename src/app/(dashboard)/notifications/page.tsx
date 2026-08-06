@@ -6,7 +6,6 @@ import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import type { Notification } from "@/types";
 import { Bell, CheckCheck, Loader2, UserPlus } from "lucide-react";
-import { useUnreadNotifications } from "@/hooks/use-unread-notifications";
 import { formatInboxListTime } from "@/lib/inbox/format-time";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -21,7 +20,6 @@ const TYPE_ICON: Record<Notification["type"], typeof Bell> = {
 export default function NotificationsPage() {
   const router = useRouter();
   const { accountId } = useAuth();
-  const unreadCount = useUnreadNotifications();
   const [notifications, setNotifications] = useState<Notification[] | null>(
     null,
   );
@@ -124,6 +122,11 @@ export default function NotificationsPage() {
   );
 
   const unreadIds = notifications?.filter((n) => !n.read_at).map((n) => n.id) ?? [];
+  // Prefer the loaded list (same realtime channel as this page) over a
+  // second `useUnreadNotifications` subscription — that hook already runs
+  // in the sidebar under a fixed channel name, and dual subscribe crashes
+  // the notifications route under supabase-js realtime.
+  const unreadCount = unreadIds.length;
 
   const markAllRead = useCallback(async () => {
     if (unreadIds.length === 0) return;
