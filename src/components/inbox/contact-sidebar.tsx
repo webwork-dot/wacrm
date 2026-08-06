@@ -1,33 +1,45 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
-import { cn } from "@/lib/utils";
-import type { Contact, Deal, ContactNote, Tag } from "@/types";
+import type { Contact, Deal, ContactNote, Tag, Conversation } from "@/types";
 import {
   Phone,
   Mail,
   Copy,
   Check,
-  User,
   Tag as TagIcon,
   DollarSign,
   StickyNote,
   Plus,
+  Clock,
+  User,
+  Calendar,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { format } from "date-fns";
 import { useTranslations } from "next-intl";
+import {
+  formatInboxListTime,
+  formatInboxDayLabel,
+  getCustomerServiceWindow,
+} from "@/lib/inbox/format-time";
 
 interface ContactSidebarProps {
   contact: Contact | null;
+  conversation?: Conversation | null;
+  assignedAgentName?: string | null;
 }
 
-export function ContactSidebar({ contact }: ContactSidebarProps) {
+export function ContactSidebar({
+  contact,
+  conversation = null,
+  assignedAgentName = null,
+}: ContactSidebarProps) {
   const tSidebar = useTranslations("Inbox.sidebar");
   const tThread = useTranslations("Inbox.messageThread");
+  const tTimer = useTranslations("Inbox.sessionTimer");
 
   const { accountId } = useAuth();
   const [copied, setCopied] = useState(false);
@@ -36,14 +48,31 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
   const [tags, setTags] = useState<(Tag & { contact_tag_id: string })[]>([]);
   const [newNote, setNewNote] = useState("");
   const [addingNote, setAddingNote] = useState(false);
+  const [resolvedAgentName, setResolvedAgentName] = useState<string | null>(
+    null,
+  );
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const session = useMemo(
+    () =>
+      getCustomerServiceWindow(
+        conversation?.last_customer_message_at,
+        new Date(nowTick),
+      ),
+    [conversation?.last_customer_message_at, nowTick],
+  );
 
   const fetchContactData = useCallback(async () => {
     if (!contact) return;
 
     const supabase = createClient();
 
-    // Fetch deals, notes, and tags in parallel
-    const [dealsRes, notesRes, tagsRes] = await Promise.all([
+    const [dealsRes, notesRes, tagsRes, agentRes] = await Promise.all([
       supabase
         .from("deals")
         .select("*, stage:pipeline_stages(*)")
@@ -58,6 +87,13 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
         .from("contact_tags")
         .select("id, tag_id, tags(*)")
         .eq("contact_id", contact.id),
+      conversation?.assigned_agent_id
+        ? supabase
+            .from("profiles")
+            .select("full_name")
+            .eq("user_id", conversation.assigned_agent_id)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
     ]);
 
     if (dealsRes.data) setDeals(dealsRes.data);
@@ -71,10 +107,11 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
         }));
       setTags(mapped);
     }
-  }, [contact]);
+    setResolvedAgentName(
+      (agentRes.data as { full_name?: string } | null)?.full_name ?? null,
+    );
+  }, [contact, conversation?.assigned_agent_id]);
 
-  // Load on contact change. setContactData/setTags run inside async
-  // Supabase callbacks, not synchronously in the effect body.
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchContactData();
@@ -85,9 +122,6 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
     await navigator.clipboard.writeText(contact.phone);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-    // Dep is the whole `contact` object (not `contact?.phone`) so the
-    // React Compiler's inference agrees with the manual dep list —
-    // fixes the `preserve-manual-memoization` lint error.
   }, [contact]);
 
   const handleAddNote = useCallback(async () => {
@@ -97,9 +131,9 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
 
     const supabase = createClient();
     const {
-      data: { session },
+      data: { session: authSession },
     } = await supabase.auth.getSession();
-    const user = session?.user;
+    const user = authSession?.user;
 
     const { data, error } = await supabase
       .from("contact_notes")
@@ -122,7 +156,9 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
   if (!contact) {
     return (
       <div className="flex h-full w-70 items-center justify-center border-l border-border bg-card">
-        <p className="text-sm text-muted-foreground">{tThread("selectConversation")}</p>
+        <p className="text-sm text-muted-foreground">
+          {tThread("selectConversation")}
+        </p>
       </div>
     );
   }
@@ -134,7 +170,6 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
     <div className="flex h-full w-70 flex-col border-l border-border bg-card">
       <ScrollArea className="flex-1">
         <div className="p-4">
-          {/* Contact Info */}
           <div className="flex flex-col items-center text-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted text-lg font-semibold text-foreground">
               {contact.avatar_url ? (
@@ -155,11 +190,12 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
             )}
           </div>
 
-          {/* Phone */}
           <div className="mt-4 space-y-2">
             <button
+              type="button"
               onClick={handleCopyPhone}
               className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted"
+              aria-label={tSidebar("copyPhone")}
             >
               <Phone className="h-4 w-4 text-muted-foreground" />
               <span className="flex-1 text-left">{contact.phone}</span>
@@ -178,10 +214,65 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
             )}
           </div>
 
-          {/* Divider */}
+          {/* Status card */}
+          <div className="my-4 space-y-2 rounded-lg border border-border bg-muted/40 p-3 text-xs">
+            <StatusRow
+              icon={<Clock className="h-3.5 w-3.5" />}
+              label={tSidebar("sessionStatus")}
+              value={
+                session.expired
+                  ? tTimer("expiredShort")
+                  : `${tTimer("activeShort")} · ${session.remainingLabel}`
+              }
+              valueClassName={
+                session.expired ? "text-red-500" : "text-emerald-600"
+              }
+            />
+            <StatusRow
+              icon={<User className="h-3.5 w-3.5" />}
+              label={tSidebar("assignedAgent")}
+              value={
+                assignedAgentName ||
+                resolvedAgentName ||
+                tSidebar("unassigned")
+              }
+            />
+            <StatusRow
+              icon={<StickyNote className="h-3.5 w-3.5" />}
+              label={tSidebar("lastMessage")}
+              value={
+                conversation?.last_message_text
+                  ? conversation.last_message_text
+                  : tSidebar("none")
+              }
+            />
+            <StatusRow
+              icon={<Clock className="h-3.5 w-3.5" />}
+              label={tSidebar("lastActivity")}
+              value={
+                conversation?.last_message_at
+                  ? formatInboxListTime(conversation.last_message_at)
+                  : tSidebar("none")
+              }
+            />
+            <StatusRow
+              icon={<Calendar className="h-3.5 w-3.5" />}
+              label={tSidebar("conversationCreated")}
+              value={
+                conversation?.created_at
+                  ? formatInboxDayLabel(conversation.created_at)
+                  : tSidebar("none")
+              }
+            />
+            <StatusRow
+              icon={<Calendar className="h-3.5 w-3.5" />}
+              label={tSidebar("customerSince")}
+              value={formatInboxDayLabel(contact.created_at)}
+            />
+          </div>
+
           <div className="my-4 border-t border-border" />
 
-          {/* Tags */}
           <div>
             <div className="flex items-center gap-2 px-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               <TagIcon className="h-3 w-3" />
@@ -189,7 +280,9 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
             </div>
             <div className="mt-2 flex flex-wrap gap-1">
               {tags.length === 0 ? (
-                <p className="px-1 text-xs text-muted-foreground">{tSidebar("noTags")}</p>
+                <p className="px-1 text-xs text-muted-foreground">
+                  {tSidebar("noTags")}
+                </p>
               ) : (
                 tags.map((tag) => (
                   <span
@@ -207,10 +300,8 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
             </div>
           </div>
 
-          {/* Divider */}
           <div className="my-4 border-t border-border" />
 
-          {/* Active Deals */}
           <div>
             <div className="flex items-center gap-2 px-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               <DollarSign className="h-3 w-3" />
@@ -218,7 +309,9 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
             </div>
             <div className="mt-2 space-y-2">
               {deals.length === 0 ? (
-                <p className="px-1 text-xs text-muted-foreground">{tSidebar("noDeals")}</p>
+                <p className="px-1 text-xs text-muted-foreground">
+                  {tSidebar("noDeals")}
+                </p>
               ) : (
                 deals.map((deal) => (
                   <div
@@ -251,10 +344,8 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
             </div>
           </div>
 
-          {/* Divider */}
           <div className="my-4 border-t border-border" />
 
-          {/* Notes */}
           <div>
             <div className="flex items-center gap-2 px-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
               <StickyNote className="h-3 w-3" />
@@ -278,18 +369,15 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
                   <Plus className="h-3 w-3" />
                 </Button>
               </div>
-
               <div className="mt-2 space-y-2">
                 {notes.map((note) => (
                   <div
                     key={note.id}
-                    className="rounded-lg bg-muted px-3 py-2"
+                    className="rounded-lg bg-muted px-3 py-2 text-xs text-foreground"
                   >
-                    <p className="whitespace-pre-wrap text-xs text-muted-foreground">
-                      {note.note_text}
-                    </p>
+                    <p className="whitespace-pre-wrap">{note.note_text}</p>
                     <p className="mt-1 text-[10px] text-muted-foreground">
-                      {format(new Date(note.created_at), "MMM d, yyyy HH:mm")}
+                      {formatInboxListTime(note.created_at)}
                     </p>
                   </div>
                 ))}
@@ -298,6 +386,34 @@ export function ContactSidebar({ contact }: ContactSidebarProps) {
           </div>
         </div>
       </ScrollArea>
+    </div>
+  );
+}
+
+function StatusRow({
+  icon,
+  label,
+  value,
+  valueClassName,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="flex items-start gap-2">
+      <span className="mt-0.5 text-muted-foreground" aria-hidden>
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          {label}
+        </p>
+        <p className={`truncate text-foreground ${valueClassName ?? ""}`}>
+          {value}
+        </p>
+      </div>
     </div>
   );
 }

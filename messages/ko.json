@@ -130,10 +130,17 @@
       "whatsappNotConnected": "WhatsApp®이 연결되어 있지 않습니다. 설정으로 이동해 계정을 연결하세요."
     },
     "conversationList": {
-      "searchPlaceholder": "대화 검색...",
+      "searchPlaceholder": "이름, 전화번호, 메시지, 딜, 메모, 태그 검색…",
       "filterAll": "전체",
       "filterUnread": "읽지 않음",
+      "filterMine": "내 것",
+      "filterAssigned": "배정됨",
       "filterOpen": "열림",
+      "filterResolved": "해결됨",
+      "filterWaiting": "대기",
+      "filterAi": "AI",
+      "filterCampaign": "캠페인",
+      "filterBroadcast": "브로드캐스트",
       "filterPending": "대기 중",
       "filterClosed": "닫힘",
       "tags": "태그",
@@ -170,17 +177,28 @@
     },
     "sessionTimer": {
       "expired": "만료됨",
+      "expiredShort": "세션 만료",
+      "activeShort": "활성",
+      "expiredBadge": "세션 만료 — 템플릿 필요",
+      "activeBadge": "활성 세션, {time}",
       "xhRemaining": "{hours}시간 남음",
       "xmRemaining": "{minutes}분 남음",
-      "noCustomerMessages": "고객 메시지 없음"
+      "noCustomerMessages": "고객 메시지 없음",
+      "bannerActiveTitle": "고객이 24시간 고객 서비스 창 안에 있습니다.",
+      "bannerActiveBody": "{time} 남음.",
+      "bannerExpiredTitle": "세션이 만료되었습니다.",
+      "bannerExpiredBody": "템플릿 메시지만 보낼 수 있습니다.",
+      "sendTemplate": "템플릿 보내기"
     },
     "composer": {
       "draftHint": "✨를 눌러 AI로 답장 초안을 작성하세요 — 보내기 전에 수정할 수 있습니다",
+      "aiSuggestedReply": "AI 추천 답장",
+      "aiSuggestLoading": "추천 생성 중…",
       "sessionExpiredHint": "24시간 세션이 만료되었습니다. 다시 연결하려면 템플릿을 사용하세요.",
       "templates": "템플릿",
       "readOnlyPlaceholder": "읽기 전용 — 뷰어는 열람만 가능하고 답장할 수 없습니다",
       "sessionExpiredPlaceholder": "세션 만료 - 템플릿을 사용하세요",
-      "typeMessagePlaceholder": "메시지를 입력하세요... (줄바꿈은 Shift+Enter)",
+      "typeMessagePlaceholder": "메시지를 입력하세요… (/ 빠른 답장, Shift+Enter 줄바꿈)",
       "readOnlyTitle": "읽기 전용 — 현재 역할로는 메시지를 보낼 수 없습니다",
       "recording": "녹음 중… {current} / {max}",
       "cancel": "취소",
@@ -216,7 +234,12 @@
       "interactiveReply": "[인터랙티브 응답]",
       "unsupported": "[지원되지 않는 메시지 형식]",
       "aiBadge": "AI",
-      "aiBadgeTitle": "AI 어시스턴트가 자동으로 전송함"
+      "aiBadgeTitle": "AI 어시스턴트가 자동으로 전송함",
+      "statusPending": "대기 중",
+      "statusSent": "전송됨",
+      "statusDelivered": "전달됨",
+      "statusRead": "읽음",
+      "statusFailed": "실패"
     },
     "actions": {
       "reply": "답장",
@@ -261,7 +284,16 @@
       "deals": "딜",
       "noTags": "태그 없음",
       "noDeals": "딜 없음",
-      "addNotePlaceholder": "메모 추가..."
+      "addNotePlaceholder": "메모 추가...",
+      "copyPhone": "전화번호 복사",
+      "sessionStatus": "세션 상태",
+      "assignedAgent": "담당 에이전트",
+      "unassigned": "미배정",
+      "lastMessage": "마지막 메시지",
+      "lastActivity": "마지막 활동",
+      "conversationCreated": "대화 생성일",
+      "customerSince": "고객 등록일",
+      "none": "—"
     },
     "aiBanner": {
       "pausedTitle": "이 대화에서 AI 어시스턴트가 일시 중지됨",

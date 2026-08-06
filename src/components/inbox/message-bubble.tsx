@@ -15,11 +15,11 @@ import {
   CornerDownLeft,
   Sparkles,
 } from "lucide-react";
-import { format } from "date-fns";
 import { ReplyQuote } from "./reply-quote";
 import { MessageReactions } from "./message-reactions";
 import { InteractivePreview } from "@/components/interactive/interactive-preview";
 import { useTranslations } from "next-intl";
+import { formatInboxClock } from "@/lib/inbox/format-time";
 
 interface MessageBubbleProps {
   message: Message;
@@ -33,17 +33,37 @@ interface MessageBubbleProps {
 function StatusIcon({ status }: { status: Message["status"] }) {
   switch (status) {
     case "sending":
-      return <Clock className="h-3 w-3 text-muted-foreground" />;
+      return <Clock className="h-3 w-3 text-muted-foreground" aria-hidden />;
     case "sent":
-      return <Check className="h-3 w-3 text-muted-foreground" />;
+      return <Check className="h-3 w-3 text-muted-foreground" aria-hidden />;
     case "delivered":
-      return <CheckCheck className="h-3 w-3 text-muted-foreground" />;
+      return <CheckCheck className="h-3 w-3 text-muted-foreground" aria-hidden />;
     case "read":
-      return <CheckCheck className="h-3 w-3 text-blue-400" />;
+      return <CheckCheck className="h-3 w-3 text-blue-400" aria-hidden />;
     case "failed":
-      return <XCircle className="h-3 w-3 text-red-400" />;
+      return <XCircle className="h-3 w-3 text-red-400" aria-hidden />;
     default:
       return null;
+  }
+}
+
+function statusLabel(
+  status: Message["status"],
+  t: ReturnType<typeof useTranslations>,
+): string {
+  switch (status) {
+    case "sending":
+      return t("statusPending");
+    case "sent":
+      return t("statusSent");
+    case "delivered":
+      return t("statusDelivered");
+    case "read":
+      return t("statusRead");
+    case "failed":
+      return t("statusFailed");
+    default:
+      return "";
   }
 }
 
@@ -268,7 +288,8 @@ export function MessageBubble({
   const t = useTranslations("Inbox.bubble");
 
   const isAgent = message.sender_type === "agent" || message.sender_type === "bot";
-  const time = format(new Date(message.created_at), "HH:mm");
+  const time = formatInboxClock(message.created_at);
+  const deliveryLabel = isAgent ? statusLabel(message.status, t) : "";
 
   // Row alignment + width cap are owned by <MessageActions> so its hover
   // group matches the bubble's content area, not the full row.
@@ -301,10 +322,6 @@ export function MessageBubble({
             isAgent ? "justify-end" : "justify-start",
           )}
         >
-          {/* AI badge — only on replies the auto-reply bot generated
-              (always outbound, so it sits on the primary fill). Lets
-              agents tell an AI reply from their own / a Flow's at a
-              glance. */}
           {message.ai_generated && (
             <span
               className="inline-flex items-center gap-0.5 rounded-full bg-primary-foreground/20 px-1.5 py-px text-[9px] font-semibold uppercase leading-none tracking-wide text-primary-foreground"
@@ -316,17 +333,27 @@ export function MessageBubble({
           )}
           <span
             className={cn(
-              "text-[10px]",
-              // Outbound bubbles sit on the primary fill, so the
-              // timestamp must read against that (not the neutral
-              // foreground) — otherwise it goes low-contrast in light
-              // mode. Inbound bubbles use the muted surface.
+              "text-[10px] tabular-nums",
               isAgent ? "text-primary-foreground/70" : "text-muted-foreground",
             )}
           >
             {time}
           </span>
-          {isAgent && <StatusIcon status={message.status} />}
+          {isAgent && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-0.5 text-[10px]",
+                isAgent ? "text-primary-foreground/70" : "text-muted-foreground",
+              )}
+              title={deliveryLabel}
+              aria-label={deliveryLabel}
+            >
+              <StatusIcon status={message.status} />
+              <span className="sr-only sm:not-sr-only sm:inline">
+                {deliveryLabel}
+              </span>
+            </span>
+          )}
         </div>
       </div>
       {reactions && reactions.length > 0 && onToggleReaction && (

@@ -236,22 +236,81 @@ export function MessageComposer({
     }
   }, [text, sending, sessionExpired, onSend, replyTo?.id]);
 
+  const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
+  const [aiSuggestLoading, setAiSuggestLoading] = useState(false);
+
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const next = e.target.value;
+      setText(next);
+      adjustHeight();
+      // Typing `/` at the start (or alone) opens quick replies — WATI-style.
+      if (next === "/" || /^\/[a-z0-9_-]*$/i.test(next)) {
+        setQuickReplyOpen(true);
+      }
+    },
+    [adjustHeight],
+  );
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === "Escape" && quickReplyOpen) {
+        e.preventDefault();
+        setQuickReplyOpen(false);
+        return;
+      }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleSend();
       }
     },
-    [handleSend]
+    [handleSend, quickReplyOpen],
   );
 
-  const handleChange = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      setText(e.target.value);
-      adjustHeight();
+  const loadAiSuggestions = useCallback(async () => {
+    if (aiSuggestLoading || inputsDisabled) return;
+    setAiSuggestLoading(true);
+    try {
+      const res = await fetch("/api/ai/draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversation_id: conversationId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (data.code === "ai_not_configured") {
+          toast.error(
+            "AI isn't set up yet — enable it in Settings → AI Assistant.",
+          );
+        }
+        return;
+      }
+      const draftText =
+        typeof data.draft === "string" ? data.draft.trim() : "";
+      if (!draftText) return;
+      const parts = draftText
+        .split(/\n+/)
+        .map((s: string) => s.replace(/^\d+[\).\s]+/, "").trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      setAiSuggestions(parts.length > 0 ? parts : [draftText]);
+    } catch {
+      toast.error("Couldn't reach the AI assistant.");
+    } finally {
+      setAiSuggestLoading(false);
+    }
+  }, [aiSuggestLoading, inputsDisabled, conversationId]);
+
+  const insertSuggestion = useCallback(
+    (suggestion: string) => {
+      setText(suggestion);
+      setAiSuggestions([]);
+      requestAnimationFrame(() => {
+        adjustHeight();
+        textareaRef.current?.focus();
+      });
     },
-    [adjustHeight]
+    [adjustHeight],
   );
 
   // Ask the AI assistant for a suggested reply and drop it into the
@@ -360,15 +419,17 @@ export function MessageComposer({
     (qr: QuickReply) => {
       setQuickReplyOpen(false);
       if (qr.kind === "interactive" && qr.interactive_payload) {
+        // Drop a leading `/…` stub before opening the builder.
+        setText((prev) => (/^\/[a-z0-9_-]*$/i.test(prev.trim()) ? "" : prev));
         openInteractiveBuilder(qr.interactive_payload);
         return;
       }
       const body = qr.content_text ?? "";
-      // Separate the snippet from any existing draft with a newline so the
-      // words don't run together ("Thanks" + "we'll…" → "Thankswe'll…").
-      setText((prev) =>
-        prev && !/\s$/.test(prev) ? `${prev}\n${body}` : `${prev}${body}`,
-      );
+      // Replace a leading `/command` stub; otherwise append.
+      setText((prev) => {
+        if (/^\/[a-z0-9_-]*$/i.test(prev.trim())) return body;
+        return prev && !/\s$/.test(prev) ? `${prev}\n${body}` : `${prev}${body}`;
+      });
       requestAnimationFrame(() => {
         adjustHeight();
         const el = textareaRef.current;
@@ -763,13 +824,43 @@ export function MessageComposer({
         </div>
       )}
 
-      {/* Hint sits outside the flex row so its height doesn't push
-          `items-end` buttons below the textarea. Indented to line up
-          under the textarea left edge. */}
-      {!draft && !recording && (
-        <p className="mt-1 pl-[5.5rem] text-[10px] text-muted-foreground">
-          {t("draftHint")}
-        </p>
+      {/* AI suggested replies — one-click insert (opt-in load). */}
+      {!draft && !recording && !inputsDisabled && (
+        <div className="mt-1.5 space-y-1.5 pl-[5.5rem]">
+          {aiSuggestions.length === 0 ? (
+            <button
+              type="button"
+              onClick={loadAiSuggestions}
+              disabled={aiSuggestLoading}
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline disabled:opacity-60"
+            >
+              <Sparkles className="h-3 w-3" />
+              {aiSuggestLoading
+                ? t("aiSuggestLoading")
+                : t("aiSuggestedReply")}
+            </button>
+          ) : (
+            <div className="space-y-1">
+              <p className="text-[10px] font-medium text-muted-foreground">
+                ✨ {t("aiSuggestedReply")}
+              </p>
+              <ul className="flex flex-col gap-1">
+                {aiSuggestions.map((s, i) => (
+                  <li key={i}>
+                    <button
+                      type="button"
+                      onClick={() => insertSuggestion(s)}
+                      className="w-full rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-left text-xs text-foreground hover:border-primary/40 hover:bg-muted"
+                    >
+                      {s}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <p className="text-[10px] text-muted-foreground">{t("draftHint")}</p>
+        </div>
       )}
 
       {/* Interactive-message builder dialog. */}

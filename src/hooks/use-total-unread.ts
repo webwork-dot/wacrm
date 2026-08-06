@@ -6,11 +6,13 @@ import type { Conversation } from "@/types";
 
 /**
  * Count of conversations with at least one unread inbound message for
- * the current user. Used by the sidebar to surface a green dot on the
- * Inbox nav entry when the user is elsewhere in the app.
+ * the current user. Used by the sidebar Inbox badge: Inbox (23).
  *
  * Lives on its own realtime channel (distinct from the inbox page's
  * "inbox-realtime") so both can coexist without sharing state.
+ *
+ * Returns unread *conversation* count (not sum of message unread_count),
+ * matching WATI / Respond.io sidebar badges.
  */
 export function useTotalUnread(): number {
   const [total, setTotal] = useState(0);
@@ -23,6 +25,12 @@ export function useTotalUnread(): number {
     const supabase = createClient();
     let cancelled = false;
 
+    const recompute = () => {
+      let sum = 0;
+      for (const n of countsRef.current.values()) if (n > 0) sum += 1;
+      setTotal(sum);
+    };
+
     // Initial load. RLS scopes this to the signed-in user automatically —
     // no explicit user_id filter needed here.
     (async () => {
@@ -32,14 +40,11 @@ export function useTotalUnread(): number {
       if (cancelled || error || !data) return;
 
       const map = new Map<string, number>();
-      let sum = 0;
       for (const row of data as { id: string; unread_count: number }[]) {
-        const n = row.unread_count ?? 0;
-        map.set(row.id, n);
-        if (n > 0) sum += 1;
+        map.set(row.id, row.unread_count ?? 0);
       }
       countsRef.current = map;
-      setTotal(sum);
+      recompute();
     })();
 
     const channel = supabase
@@ -56,10 +61,7 @@ export function useTotalUnread(): number {
             const row = payload.new as Conversation;
             map.set(row.id, row.unread_count ?? 0);
           }
-          // Recompute — cheap, conversations per user stay small.
-          let sum = 0;
-          for (const n of map.values()) if (n > 0) sum += 1;
-          setTotal(sum);
+          recompute();
         },
       )
       .subscribe();

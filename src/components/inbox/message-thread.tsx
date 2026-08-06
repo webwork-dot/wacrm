@@ -22,15 +22,18 @@ import {
   ChevronDown,
   UserPlus,
   Check,
-  Clock,
   ArrowLeft,
   RefreshCw,
   PanelRightOpen,
   PanelRightClose,
 } from "lucide-react";
-import { format, isToday, isYesterday, differenceInHours } from "date-fns";
+import { format, isToday, isYesterday } from "date-fns";
 import { useTranslations } from "next-intl";
 import { Badge } from "@/components/ui/badge";
+import {
+  getCustomerServiceWindow,
+  formatInboxDayLabel,
+} from "@/lib/inbox/format-time";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -115,7 +118,7 @@ function formatDateSeparator(dateStr: string, t: ReturnType<typeof useTranslatio
   const date = new Date(dateStr);
   if (isToday(date)) return t("today");
   if (isYesterday(date)) return t("yesterday");
-  return format(date, "MMMM d, yyyy");
+  return formatInboxDayLabel(date);
 }
 
 function groupMessagesByDate(messages: Message[]) {
@@ -226,32 +229,24 @@ export function MessageThread({
     };
   }, []);
 
-  // 24-hour session timer
-  const sessionInfo = useMemo(() => {
-    if (!messages.length) return { expired: false, remaining: "" };
+  // 24-hour Meta customer-service window — live countdown (no refresh).
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
-    // Find last customer message
+  const sessionInfo = useMemo(() => {
+    const fromConversation = conversation?.last_customer_message_at;
     const lastCustomerMsg = [...messages]
       .reverse()
       .find((m) => m.sender_type === "customer");
-
-    if (!lastCustomerMsg) return { expired: true, remaining: "No customer messages" };
-
-    const hoursSince = differenceInHours(new Date(), new Date(lastCustomerMsg.created_at));
-    const expired = hoursSince >= 24;
-
-    if (expired) {
-      return { expired: true, remaining: tTimer("expired") };
-    }
-
-    const hoursLeft = 24 - hoursSince;
-    const remaining =
-      hoursLeft >= 1
-        ? tTimer("xhRemaining", { hours: Math.floor(hoursLeft) })
-        : tTimer("xmRemaining", { minutes: Math.floor(hoursLeft * 60) });
-
-    return { expired, remaining };
-  }, [messages, tTimer]);
+    const at =
+      fromConversation ||
+      lastCustomerMsg?.created_at ||
+      null;
+    return getCustomerServiceWindow(at, new Date(nowTick));
+  }, [messages, conversation?.last_customer_message_at, nowTick]);
 
   // Store latest callback in a ref so fetchMessages doesn't need to
   // depend on `onMessagesLoaded` — otherwise parent re-renders cause
@@ -907,11 +902,23 @@ export function MessageThread({
             variant="outline"
             className={cn(
               "ml-1 hidden gap-1 border-border text-[10px] sm:inline-flex sm:ml-2",
-              sessionInfo.expired ? "text-red-400" : "text-primary"
+              sessionInfo.expired ? "text-red-500" : "text-emerald-600",
             )}
+            aria-label={
+              sessionInfo.expired
+                ? tTimer("expiredBadge")
+                : tTimer("activeBadge", { time: sessionInfo.remainingLabel })
+            }
           >
-            <Clock className="h-3 w-3" />
-            {sessionInfo.remaining}
+            <span aria-hidden>{sessionInfo.expired ? "🔴" : "🟢"}</span>
+            {sessionInfo.expired
+              ? tTimer("expiredShort")
+              : tTimer("activeShort")}
+            {!sessionInfo.expired && (
+              <span className="tabular-nums text-muted-foreground">
+                {sessionInfo.remainingLabel}
+              </span>
+            )}
           </Badge>
         </div>
 
@@ -1130,6 +1137,52 @@ export function MessageThread({
               </div>
             ))}
           </div>
+        )}
+      </div>
+
+      {/* Meta 24h customer-service window banner */}
+      <div
+        role="status"
+        className={cn(
+          "flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2 sm:px-4",
+          sessionInfo.expired
+            ? "border-red-500/20 bg-red-500/5"
+            : "border-emerald-500/20 bg-emerald-500/5",
+        )}
+      >
+        <div className="min-w-0 text-xs leading-relaxed">
+          {sessionInfo.expired ? (
+            <>
+              <p className="font-medium text-red-600 dark:text-red-400">
+                <span aria-hidden>🔴 </span>
+                {tTimer("bannerExpiredTitle")}
+              </p>
+              <p className="text-muted-foreground">
+                {tTimer("bannerExpiredBody")}
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="font-medium text-emerald-700 dark:text-emerald-400">
+                <span aria-hidden>🟢 </span>
+                {tTimer("bannerActiveTitle")}
+              </p>
+              <p className="tabular-nums text-muted-foreground">
+                {tTimer("bannerActiveBody", {
+                  time: sessionInfo.remainingLabel,
+                })}
+              </p>
+            </>
+          )}
+        </div>
+        {sessionInfo.expired && (
+          <button
+            type="button"
+            onClick={handleOpenTemplates}
+            className="shrink-0 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            {tTimer("sendTemplate")}
+          </button>
         )}
       </div>
 

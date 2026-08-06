@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   matchesContactFilters,
   normalizeConversation,
+  sortConversations,
+  matchesInboxFilter,
 } from "./conversations";
 import type { Conversation } from "@/types";
 
@@ -141,5 +143,55 @@ describe("normalizeConversation", () => {
     };
     // A contactless row passes through untouched (consumers use `?.`).
     expect(normalizeConversation(raw).contact).toBeNull();
+  });
+});
+
+describe("sortConversations", () => {
+  it("orders pinned > unread > latest customer message", () => {
+    const rows: Conversation[] = [
+      {
+        ...makeConversation(null),
+        id: "read-old",
+        unread_count: 0,
+        last_customer_message_at: "2026-01-01T00:00:00Z",
+      },
+      {
+        ...makeConversation(null),
+        id: "unread",
+        unread_count: 2,
+        last_customer_message_at: "2026-01-02T00:00:00Z",
+      },
+      {
+        ...makeConversation(null),
+        id: "pinned",
+        is_pinned: true,
+        unread_count: 0,
+        last_customer_message_at: "2026-01-01T00:00:00Z",
+      },
+    ];
+    expect(sortConversations(rows).map((c) => c.id)).toEqual([
+      "pinned",
+      "unread",
+      "read-old",
+    ]);
+  });
+});
+
+describe("matchesInboxFilter", () => {
+  it("matches mine / waiting / resolved", () => {
+    const mine: Conversation = {
+      ...makeConversation(null),
+      assigned_agent_id: "agent-1",
+      status: "pending",
+    };
+    expect(matchesInboxFilter(mine, "mine", "agent-1")).toBe(true);
+    expect(matchesInboxFilter(mine, "waiting", "agent-1")).toBe(true);
+    expect(
+      matchesInboxFilter(
+        { ...mine, status: "closed" },
+        "resolved",
+        "agent-1",
+      ),
+    ).toBe(true);
   });
 });

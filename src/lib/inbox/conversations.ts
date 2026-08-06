@@ -9,6 +9,120 @@ import type { Conversation, Contact, Tag } from "@/types";
 export const CONVERSATION_SELECT =
   "*, contact:contacts(*, contact_tags(tags(*)))";
 
+/** Inbox list filters (WATI / Respond.io style). */
+export type InboxFilter =
+  | "all"
+  | "unread"
+  | "mine"
+  | "assigned"
+  | "open"
+  | "resolved"
+  | "waiting"
+  | "ai"
+  | "campaign"
+  | "broadcast";
+
+/**
+ * Sort for the conversation list:
+ * 1. Pinned first
+ * 2. Unread above read
+ * 3. Latest customer message (fallback: last_message_at)
+ */
+export function sortConversations(conversations: Conversation[]): Conversation[] {
+  return [...conversations].sort((a, b) => {
+    const pinA = a.is_pinned ? 1 : 0;
+    const pinB = b.is_pinned ? 1 : 0;
+    if (pinA !== pinB) return pinB - pinA;
+
+    const unreadA = (a.unread_count ?? 0) > 0 ? 1 : 0;
+    const unreadB = (b.unread_count ?? 0) > 0 ? 1 : 0;
+    if (unreadA !== unreadB) return unreadB - unreadA;
+
+    const timeA = Date.parse(
+      a.last_customer_message_at || a.last_message_at || a.updated_at || "",
+    );
+    const timeB = Date.parse(
+      b.last_customer_message_at || b.last_message_at || b.updated_at || "",
+    );
+    return (timeB || 0) - (timeA || 0);
+  });
+}
+
+/**
+ * Local search across name, phone, last message, tags, company, conversation id.
+ * Broader note/deal/message-body search is handled by the list when a query runs.
+ */
+export function matchesInboxSearch(
+  conversation: Conversation,
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+
+  if (conversation.id.toLowerCase().includes(q)) return true;
+
+  const contact = conversation.contact;
+  const name = contact?.name?.toLowerCase() ?? "";
+  const phone = contact?.phone?.toLowerCase() ?? "";
+  const email = contact?.email?.toLowerCase() ?? "";
+  const company = contact?.company?.toLowerCase() ?? "";
+  const lastMsg = conversation.last_message_text?.toLowerCase() ?? "";
+  if (
+    name.includes(q) ||
+    phone.includes(q) ||
+    email.includes(q) ||
+    company.includes(q) ||
+    lastMsg.includes(q)
+  ) {
+    return true;
+  }
+
+  const tags = contact?.tags ?? [];
+  if (tags.some((t) => t.name.toLowerCase().includes(q))) return true;
+
+  return false;
+}
+
+export function matchesInboxFilter(
+  conversation: Conversation,
+  filter: InboxFilter,
+  currentUserId: string | null,
+  opts?: { broadcastContactIds?: Set<string> },
+): boolean {
+  switch (filter) {
+    case "all":
+      return true;
+    case "unread":
+      return (conversation.unread_count ?? 0) > 0;
+    case "mine":
+      return (
+        !!currentUserId && conversation.assigned_agent_id === currentUserId
+      );
+    case "assigned":
+      return !!conversation.assigned_agent_id;
+    case "open":
+      return conversation.status === "open";
+    case "resolved":
+      return conversation.status === "closed";
+    case "waiting":
+      return conversation.status === "pending";
+    case "ai":
+      // Threads the AI bot has actually engaged (or handed off from).
+      return (
+        (conversation.ai_reply_count ?? 0) > 0 ||
+        !!conversation.ai_handoff_summary
+      );
+    case "campaign":
+    case "broadcast": {
+      const ids = opts?.broadcastContactIds;
+      if (!ids || !conversation.contact_id) return false;
+      return ids.has(conversation.contact_id);
+    }
+    default:
+      return true;
+  }
+}
+
 /** Raw shape returned by {@link CONVERSATION_SELECT} before flattening. */
 type RawContact = Contact & { contact_tags?: { tags: Tag | null }[] };
 type RawConversation = Omit<Conversation, "contact"> & {

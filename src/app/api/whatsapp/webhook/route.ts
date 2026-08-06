@@ -889,13 +889,18 @@ async function processMessage(
     'Realtime publish: server does not emit events directly. Supabase postgres_changes should fire on public.messages INSERT if the table is in publication supabase_realtime. Watch browser console for [inbox-realtime].',
   )
 
-  // Update conversation
+  // Update conversation — unread_count only bumps for inbound customer
+  // messages (this path). Open/focused clients reset to 0 via realtime.
+  const customerMessageAt = new Date(
+    parseInt(message.timestamp) * 1000,
+  ).toISOString()
   webhookDebug('Conversation update', { conversationId: conversation.id })
   const { error: convError } = await supabaseAdmin()
     .from('conversations')
     .update({
       last_message_text: contentText || `[${message.type}]`,
-      last_message_at: new Date().toISOString(),
+      last_message_at: customerMessageAt,
+      last_customer_message_at: customerMessageAt,
       unread_count: (conversation.unread_count || 0) + 1,
       updated_at: new Date().toISOString(),
     })

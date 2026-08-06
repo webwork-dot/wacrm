@@ -165,6 +165,10 @@ export interface Conversation {
   assigned_agent_id?: string;
   last_message_text?: string;
   last_message_at?: string;
+  /** Last inbound customer message — drives Meta 24h customer-service window. */
+  last_customer_message_at?: string | null;
+  /** Pinned threads stay above unread/read groups in the inbox list. */
+  is_pinned?: boolean;
   unread_count: number;
   created_at: string;
   updated_at: string;
