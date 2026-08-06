@@ -9,6 +9,7 @@ import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
 import { validateAiCredentials } from '@/lib/ai/validate'
 import { embedTexts } from '@/lib/ai/embeddings'
 import { AiError, type AiProvider } from '@/lib/ai/types'
+import { normalizeStudioProfile } from '@/lib/ai/studio/profile'
 
 function bad(message: string) {
   return NextResponse.json({ error: message }, { status: 400 })
@@ -30,16 +31,16 @@ export async function GET() {
       // `api_key` is selected only to derive `has_key` — it is stripped
       // out below and never returned to the client.
       .select(
-        'provider, model, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, api_key, embeddings_api_key',
+        'provider, model, system_prompt, is_active, auto_reply_enabled, auto_reply_max_per_conversation, handoff_agent_id, api_key, embeddings_api_key, studio_profile',
       )
       .eq('account_id', accountId)
       .maybeSingle()
 
     if (error) {
-      // Migration 033 not applied — load without handoff_agent_id.
+      // Migration 033/043 not applied — load without newer columns.
       if (
         error.code === '42703' ||
-        /handoff_agent_id does not exist/i.test(error.message)
+        /does not exist/i.test(error.message)
       ) {
         const legacy = await supabase
           .from('ai_configs')
@@ -62,6 +63,7 @@ export async function GET() {
           has_key: !!api_key,
           has_embeddings_key: !!embeddings_api_key,
           handoff_agent_id: null,
+          studio_profile: {},
           schema_needs_migration: true,
           ...safe,
         })
@@ -81,6 +83,7 @@ export async function GET() {
       configured: true,
       has_key: !!api_key,
       has_embeddings_key: !!embeddings_api_key,
+      studio_profile: (safe as { studio_profile?: unknown }).studio_profile ?? {},
       ...safe,
     })
   } catch (err) {
@@ -244,6 +247,9 @@ export async function POST(request: Request) {
     } else if (clearEmbeddingsKey) {
       shared.embeddings_api_key = null
     }
+    if ('studio_profile' in body) {
+      shared.studio_profile = normalizeStudioProfile(body.studio_profile)
+    }
 
     const persist = async (payload: Record<string, unknown>) => {
       if (existing) {
@@ -264,11 +270,14 @@ export async function POST(request: Request) {
     if (
       saveErr &&
       (saveErr.code === '42703' ||
-        /handoff_agent_id does not exist/i.test(saveErr.message)) &&
-      'handoff_agent_id' in shared
+        /does not exist/i.test(saveErr.message))
     ) {
-      const { handoff_agent_id: _omit, ...withoutHandoff } = shared
-      ;({ error: saveErr } = await persist(withoutHandoff))
+      const {
+        handoff_agent_id: _h,
+        studio_profile: _s,
+        ...withoutNew
+      } = shared
+      ;({ error: saveErr } = await persist(withoutNew))
     }
 
     if (saveErr) {

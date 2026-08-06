@@ -24,6 +24,7 @@ async function requireOwnership(
   | {
       ok: true
       userId: string
+      accountId: string
       supabase: Awaited<ReturnType<typeof createClient>>
     }
   | { ok: false; status: number; body: { error: string } }
@@ -35,17 +36,22 @@ async function requireOwnership(
   if (!user) {
     return { ok: false, status: 401, body: { error: 'Unauthorized' } }
   }
-  // RLS scopes this to the caller — a flow owned by another user
-  // returns null (404 below).
+  // RLS scopes this to the caller's account — a flow in another
+  // account returns null (404 below).
   const { data: flow } = await supabase
     .from('flows')
-    .select('id')
+    .select('id, account_id')
     .eq('id', flowId)
     .maybeSingle()
-  if (!flow) {
+  if (!flow?.account_id) {
     return { ok: false, status: 404, body: { error: 'Not found' } }
   }
-  return { ok: true, userId: user.id, supabase }
+  return {
+    ok: true,
+    userId: user.id,
+    accountId: flow.account_id as string,
+    supabase,
+  }
 }
 
 export async function GET(
@@ -104,6 +110,7 @@ export async function PUT(
 
   const guard = await requireOwnership(id)
   if (!guard.ok) return NextResponse.json(guard.body, { status: guard.status })
+  const { accountId } = guard
 
   const body = (await request.json().catch(() => null)) as PutBody | null
   if (!body) {
@@ -135,10 +142,13 @@ export async function PUT(
   if (body.fallback_policy !== undefined)
     flowPatch.fallback_policy = body.fallback_policy
 
+  // Service-role bypasses RLS — always pin account_id after the
+  // membership gate so a stale id cannot mutate another tenant.
   const { error: updErr } = await admin
     .from('flows')
     .update(flowPatch)
     .eq('id', id)
+    .eq('account_id', accountId)
   if (updErr) {
     return NextResponse.json({ error: updErr.message }, { status: 500 })
   }
@@ -146,6 +156,8 @@ export async function PUT(
   if (body.nodes !== undefined) {
     // Delete-then-insert. Not transactional but the runner handles
     // mid-edit reads safely (a node_not_found ends the run cleanly).
+    // flow_nodes has no account_id; scope via flow_id already verified
+    // to belong to accountId above.
     const { error: delErr } = await admin
       .from('flow_nodes')
       .delete()
@@ -173,7 +185,12 @@ export async function PUT(
   // Re-fetch and return the new state — the editor uses the response
   // to reconcile its local form state.
   const [{ data: flow }, { data: nodes }] = await Promise.all([
-    admin.from('flows').select('*').eq('id', id).maybeSingle(),
+    admin
+      .from('flows')
+      .select('*')
+      .eq('id', id)
+      .eq('account_id', accountId)
+      .maybeSingle(),
     admin
       .from('flow_nodes')
       .select('*')
@@ -205,7 +222,11 @@ export async function DELETE(
   // mechanism in v1, but that's intentional: deleting a flow is a
   // deliberate destructive action and the partial unique index will
   // free up the contact for new triggers immediately.
-  const { error } = await supabaseAdmin().from('flows').delete().eq('id', id)
+  const { error } = await supabaseAdmin()
+    .from('flows')
+    .delete()
+    .eq('id', id)
+    .eq('account_id', guard.accountId)
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }

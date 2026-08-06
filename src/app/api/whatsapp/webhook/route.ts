@@ -17,6 +17,11 @@ import {
   DEFAULT_INBOX_SETTINGS,
   slaPatchOnCustomerMessage,
 } from '@/lib/inbox/sla'
+import {
+  emitAndTrigger,
+  wireAutomationRuntime,
+  wireTriggerEngineToEventBus,
+} from '@/lib/platform'
 
 // The `after()` callback in POST runs within this route's max duration.
 // Inbound processing can fan out to per-media Meta verification calls, so
@@ -276,6 +281,8 @@ export async function POST(request: Request) {
 }
 
 async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
+  wireTriggerEngineToEventBus()
+  wireAutomationRuntime()
   webhookDebug('processWebhook START')
   if (!body.entry) {
     webhookDebug('RETURN: No entry')
@@ -317,8 +324,9 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       // Handle status updates
       if (value.statuses) {
         webhookDebug('Status updates (not inbox text)', value.statuses)
+        const statusPhoneNumberId = value.metadata?.phone_number_id
         for (const status of value.statuses) {
-          await handleStatusUpdate(status)
+          await handleStatusUpdate(status, statusPhoneNumberId)
         }
       }
 
@@ -490,48 +498,70 @@ function isValidStatusTransition(current: string, incoming: string): boolean {
   return ii > ci
 }
 
-async function handleStatusUpdate(status: {
-  id: string
-  status: string
-  timestamp: string
-  recipient_id: string
-}) {
-  // 1) Mirror onto messages (legacy behavior) — Meta's status values
-  //    already match the CHECK constraint on messages.status. No
-  //    `.select()`: message_id is NOT unique (migration 009 — Meta ids
-  //    repeat across numbers), so this updates 0..N rows and must not
-  //    assume a single row.
-  const { error: msgErr } = await supabaseAdmin()
-    .from('messages')
-    .update({ status: status.status })
-    .eq('message_id', status.id)
-
-  if (msgErr) {
-    console.error('Error updating message status:', msgErr)
+async function handleStatusUpdate(
+  status: {
+    id: string
+    status: string
+    timestamp: string
+    recipient_id: string
+  },
+  phoneNumberId?: string,
+) {
+  // Resolve tenant from the WABA phone number that received this
+  // status webhook — never update messages globally by Meta message_id
+  // alone (ids can collide across numbers / tenants).
+  let accountId: string | null = null
+  if (phoneNumberId) {
+    const { data: cfg } = await supabaseAdmin()
+      .from('whatsapp_config')
+      .select('account_id')
+      .eq('phone_number_id', phoneNumberId)
+      .maybeSingle()
+    accountId = (cfg?.account_id as string | undefined) ?? null
   }
 
-  // Webhook fan-out for this status change happens at the END of this
-  // handler (after the broadcast mirror below), so a slow subscriber
-  // endpoint can't delay the broadcast_recipients update.
+  if (!accountId) {
+    webhookDebug('Status update skipped — no account for phone_number_id', {
+      phoneNumberId: phoneNumberId ?? null,
+      meta_message_id: status.id,
+    })
+    return
+  }
 
-  // 2) Mirror onto broadcast_recipients via whatsapp_message_id
-  //    (added in migration 003). The aggregate trigger on
-  //    broadcast_recipients re-derives the parent broadcast's
-  //    sent/delivered/read/failed counts automatically.
+  // 1) Mirror onto messages scoped to this account's conversations.
+  const { data: msgRows, error: msgLookupErr } = await supabaseAdmin()
+    .from('messages')
+    .select('id, conversation_id, conversations!inner(account_id)')
+    .eq('message_id', status.id)
+    .eq('conversations.account_id', accountId)
+
+  if (msgLookupErr) {
+    console.error('Error looking up message status rows:', msgLookupErr)
+  } else if (msgRows && msgRows.length > 0) {
+    const ids = msgRows.map((r: { id: string }) => r.id)
+    const { error: msgErr } = await supabaseAdmin()
+      .from('messages')
+      .update({ status: status.status })
+      .in('id', ids)
+    if (msgErr) {
+      console.error('Error updating message status:', msgErr)
+    }
+  }
+
+  // 2) Mirror onto broadcast_recipients for this account only.
   const tsIso = new Date(parseInt(status.timestamp) * 1000).toISOString()
 
   const { data: recipient, error: recFetchErr } = await supabaseAdmin()
     .from('broadcast_recipients')
-    .select('id, status')
+    .select('id, status, broadcasts!inner(account_id)')
     .eq('whatsapp_message_id', status.id)
+    .eq('broadcasts.account_id', accountId)
     .maybeSingle()
 
   if (recFetchErr) {
     console.error('Error fetching broadcast recipient:', recFetchErr)
   } else if (
     recipient &&
-    // Guard transitions — forward-only on the success ladder, and
-    // `failed` only from pre-delivered states.
     isValidStatusTransition(recipient.status, status.status)
   ) {
     const update: Record<string, unknown> = { status: status.status }
@@ -550,31 +580,20 @@ async function handleStatusUpdate(status: {
   }
 
   // 3) Webhook fan-out for messages we store (inbox / API sends).
-  //    Runs last so a slow subscriber can't delay the mirrors above.
-  //    Bounded to one row (message_id isn't unique) purely to resolve
-  //    the owning account for delivery.
-  const { data: msgRow } = await supabaseAdmin()
-    .from('messages')
-    .select('conversation_id, conversations(account_id)')
-    .eq('message_id', status.id)
-    .limit(1)
-    .maybeSingle()
-
-  if (msgRow) {
-    const conv = msgRow.conversations as { account_id: string } | null
-    const accountId = conv?.account_id
-    if (accountId) {
-      await dispatchWebhookEvent(
-        supabaseAdmin(),
-        accountId,
-        'message.status_updated',
-        {
-          whatsapp_message_id: status.id,
-          conversation_id: msgRow.conversation_id,
-          status: status.status,
-        }
-      )
-    }
+  const firstMsg = msgRows?.[0] as
+    | { conversation_id: string }
+    | undefined
+  if (firstMsg?.conversation_id) {
+    await dispatchWebhookEvent(
+      supabaseAdmin(),
+      accountId,
+      'message.status_updated',
+      {
+        whatsapp_message_id: status.id,
+        conversation_id: firstMsg.conversation_id,
+        status: status.status,
+      },
+    )
   }
 }
 
@@ -976,6 +995,15 @@ async function processMessage(
   // so the broadcast's `replied_count` advances (via the aggregate
   // trigger installed in migration 003).
   await flagBroadcastReplyIfAny(accountId, contactRecord.id)
+
+  // Event Bus — Trigger Engine (and later Analytics/Audit) subscribe.
+  void emitAndTrigger(supabaseAdmin(), accountId, 'whatsapp.message.received', {
+    conversation_id: conversation.id,
+    contact_id: contactRecord.id,
+    message_id: insertedRows[0]?.id ?? null,
+    meta_message_id: message.id,
+    content_type: message.type,
+  })
 
   // ============================================================
   // Flow runner dispatch.

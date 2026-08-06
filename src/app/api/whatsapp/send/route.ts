@@ -10,6 +10,10 @@ import {
   validateSendMessageParams,
   SendMessageError,
 } from '@/lib/whatsapp/send-message'
+import {
+  checkPlanQuota,
+  recordUsageEvent,
+} from '@/lib/platform/plans'
 
 // The dashboard's outbound-send endpoint. It owns auth, per-user rate
 // limiting, and the two ways the UI targets a thread — an existing
@@ -57,6 +61,14 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: 'Your profile is not linked to an account.' },
         { status: 403 },
+      )
+    }
+
+    const quota = await checkPlanQuota(accountId, 'message.outbound')
+    if (!quota.allowed) {
+      return NextResponse.json(
+        { error: quota.reason ?? 'Plan limit reached', code: 'plan_limit' },
+        { status: 402 },
       )
     }
 
@@ -184,6 +196,12 @@ export async function POST(request: Request) {
         templateMessageParams: template_message_params,
         interactivePayload: interactive_payload,
         replyToMessageId: reply_to_message_id,
+      })
+
+      void recordUsageEvent({
+        accountId,
+        eventType: 'message.outbound',
+        meta: { message_type, conversation_id: conversationId },
       })
 
       return NextResponse.json({

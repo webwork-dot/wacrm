@@ -4,6 +4,7 @@ import { Suspense, useState, useCallback, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
 import {
   CONVERSATION_SELECT,
   normalizeConversation,
@@ -37,6 +38,7 @@ function InboxPageInner() {
   const t = useTranslations("Inbox.page");
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { accountId } = useAuth();
   /**
    * `?c=<id>` deep-link support. Used when landing here from the
    * dashboard's recent-conversations list so the right thread opens
@@ -134,11 +136,14 @@ function InboxPageInner() {
     hydratingConvIdsRef.current.add(convId);
     try {
       const supabase = createClient();
-      const { data, error } = await supabase
+      let query = supabase
         .from("conversations")
         .select(CONVERSATION_SELECT)
-        .eq("id", convId)
-        .maybeSingle();
+        .eq("id", convId);
+      if (accountId) {
+        query = query.eq("account_id", accountId);
+      }
+      const { data, error } = await query.maybeSingle();
       if (error) {
         // Supabase errors have non-enumerable properties — log fields
         // explicitly so the console message isn't just `{}`.
@@ -171,7 +176,7 @@ function InboxPageInner() {
     } finally {
       hydratingConvIdsRef.current.delete(convId);
     }
-  }, []);
+  }, [accountId]);
 
   // Check WhatsApp connection status on mount
   useEffect(() => {

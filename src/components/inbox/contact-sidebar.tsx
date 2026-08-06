@@ -28,6 +28,8 @@ import {
 
 import { ConversationNotes } from "./conversation-notes";
 import { ConversationTimeline } from "./conversation-timeline";
+import { ConversationInsights } from "./conversation-insights";
+import { ConversationWatchers } from "./conversation-watchers";
 
 interface ContactSidebarProps {
   contact: Contact | null;
@@ -361,6 +363,11 @@ export function ContactSidebar({
 
           {conversation && (
             <>
+              <div className="my-4 border-t border-border" />
+              <ConversationInsights conversation={conversation} />
+              <div className="my-4 border-t border-border" />
+              <ConversationWatchers conversationId={conversation.id} />
+              <div className="my-4 border-t border-border" />
               <ConversationNotes
                 conversationId={conversation.id}
                 contactId={contact.id}

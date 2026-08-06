@@ -20,6 +20,12 @@ interface DocSummary {
   id: string;
   title: string;
   updated_at: string;
+  source_type?: string;
+  sync_status?: string;
+  last_synced_at?: string | null;
+  sync_error?: string | null;
+  version?: number;
+  chunk_count?: number;
 }
 
 /** Editor target: 'new' when creating, a doc id when editing, null when closed. */
@@ -189,8 +195,21 @@ export function AiKnowledgeCard({
                     key={doc.id}
                     className="flex items-center justify-between gap-2 px-3 py-2"
                   >
-                    <span className="min-w-0 truncate text-sm text-foreground">
-                      {doc.title}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm text-foreground">
+                        {doc.title}
+                      </span>
+                      <span className="mt-0.5 flex flex-wrap gap-x-2 text-[11px] text-muted-foreground">
+                        {doc.source_type && <span>{doc.source_type}</span>}
+                        {doc.sync_status && <span>sync: {doc.sync_status}</span>}
+                        {typeof doc.chunk_count === 'number' && (
+                          <span>{doc.chunk_count} chunks</span>
+                        )}
+                        {doc.version != null && <span>v{doc.version}</span>}
+                        {doc.sync_error && (
+                          <span className="text-destructive">{doc.sync_error}</span>
+                        )}
+                      </span>
                     </span>
                     {canEdit && (
                       <span className="flex shrink-0 gap-1">

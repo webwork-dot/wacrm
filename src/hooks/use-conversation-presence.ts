@@ -9,12 +9,16 @@ export interface ConversationPresencePeer {
   userId: string;
   fullName: string;
   state: ConversationPresenceState;
+  /** Client clock when this peer's presence was last observed. */
+  lastSeenAt: number;
 }
 
 interface TrackPayload {
   userId: string;
   fullName: string;
   state: ConversationPresenceState;
+  /** ISO timestamp from the tracking client (heartbeat). */
+  ts?: string;
 }
 
 interface UseConversationPresenceOptions {
@@ -32,9 +36,14 @@ interface UseConversationPresenceResult {
   setTyping: (typing: boolean) => void;
 }
 
+/** Re-track interval so closed tabs expire via missing heartbeats. */
+const HEARTBEAT_MS = 20_000;
+/** Drop peers that have not refreshed within this window. */
+const STALE_AFTER_MS = 60_000;
+
 /**
  * Ephemeral per-conversation presence via Supabase Realtime Presence.
- * Tracks viewing / typing so agents can avoid colliding on the same thread.
+ * Heartbeat every 20s; peers older than 60s are treated as gone.
  */
 export function useConversationPresence({
   conversationId,
@@ -47,7 +56,21 @@ export function useConversationPresence({
     ReturnType<typeof createClient>["channel"]
   > | null>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stateRef = useRef<ConversationPresenceState>("viewing");
+
+  const pruneAndSet = useCallback(
+    (raw: ConversationPresencePeer[]) => {
+      const now = Date.now();
+      const next = raw.filter((p) => now - p.lastSeenAt < STALE_AFTER_MS);
+      next.sort((a, b) => {
+        if (a.state !== b.state) return a.state === "typing" ? -1 : 1;
+        return a.fullName.localeCompare(b.fullName);
+      });
+      setPeers(next);
+    },
+    [],
+  );
 
   const syncPeers = useCallback(
     (presenceState: Record<string, TrackPayload[]>) => {
@@ -55,37 +78,39 @@ export function useConversationPresence({
         setPeers([]);
         return;
       }
+      const now = Date.now();
       const next: ConversationPresencePeer[] = [];
       for (const metas of Object.values(presenceState)) {
         for (const meta of metas) {
           if (!meta?.userId || meta.userId === userId) continue;
+          const fromTs = meta.ts ? Date.parse(meta.ts) : NaN;
           next.push({
             userId: meta.userId,
             fullName: meta.fullName || "Agent",
             state: meta.state === "typing" ? "typing" : "viewing",
+            lastSeenAt: Number.isFinite(fromTs) ? fromTs : now,
           });
         }
       }
-      // Prefer typing peers first, then stable by name.
-      next.sort((a, b) => {
-        if (a.state !== b.state) return a.state === "typing" ? -1 : 1;
-        return a.fullName.localeCompare(b.fullName);
-      });
-      setPeers(next);
+      pruneAndSet(next);
     },
-    [userId],
+    [userId, pruneAndSet],
   );
 
-  const track = useCallback(async (state: ConversationPresenceState) => {
-    const channel = channelRef.current;
-    if (!channel || !userId) return;
-    stateRef.current = state;
-    await channel.track({
-      userId,
-      fullName: fullName || "Agent",
-      state,
-    } satisfies TrackPayload);
-  }, [userId, fullName]);
+  const track = useCallback(
+    async (state: ConversationPresenceState) => {
+      const channel = channelRef.current;
+      if (!channel || !userId) return;
+      stateRef.current = state;
+      await channel.track({
+        userId,
+        fullName: fullName || "Agent",
+        state,
+        ts: new Date().toISOString(),
+      } satisfies TrackPayload);
+    },
+    [userId, fullName],
+  );
 
   useEffect(() => {
     if (!enabled || !conversationId || !userId) {
@@ -109,10 +134,24 @@ export function useConversationPresence({
         }
       });
 
+    heartbeatRef.current = setInterval(() => {
+      void track(stateRef.current);
+      // Re-prune locally even if no sync event arrives.
+      setPeers((prev) => {
+        const now = Date.now();
+        const kept = prev.filter((p) => now - p.lastSeenAt < STALE_AFTER_MS);
+        return kept.length === prev.length ? prev : kept;
+      });
+    }, HEARTBEAT_MS);
+
     return () => {
       if (typingTimerRef.current) {
         clearTimeout(typingTimerRef.current);
         typingTimerRef.current = null;
+      }
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
       }
       void channel.untrack();
       void supabase.removeChannel(channel);
@@ -121,7 +160,6 @@ export function useConversationPresence({
     };
   }, [enabled, conversationId, userId, syncPeers, track]);
 
-  // Re-track when display name changes while already subscribed.
   useEffect(() => {
     if (!channelRef.current || !userId) return;
     void track(stateRef.current);
@@ -135,7 +173,6 @@ export function useConversationPresence({
       }
       if (typing) {
         void track("typing");
-        // Fall back to viewing after idle so we don't stick on "replying".
         typingTimerRef.current = setTimeout(() => {
           void track("viewing");
         }, 2500);

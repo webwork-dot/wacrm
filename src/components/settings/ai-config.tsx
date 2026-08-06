@@ -27,11 +27,16 @@ import {
 } from '@/components/ui/select';
 import { SettingsPanelHead } from './settings-panel-head';
 import { AiKnowledgeCard } from './ai-knowledge';
+import { AiStudioWizard } from '@/components/agents/ai-studio-wizard';
 import { AI_PROVIDER_DEFAULT_MODEL } from '@/lib/ai/defaults';
 import type { AiProvider } from '@/lib/ai/types';
 import type { AccountMember } from '@/types';
 import { fetchAccountMembers, memberLabel } from '@/lib/account/members';
 import { useTranslations } from 'next-intl';
+import {
+  normalizeStudioProfile,
+  type AiStudioProfile,
+} from '@/lib/ai/studio/profile';
 
 const MASKED_KEY = '••••••••••••••••';
 
@@ -70,6 +75,9 @@ export function AiConfig() {
   const [embeddingsKeyEdited, setEmbeddingsKeyEdited] = useState(false);
   const [hasStoredEmbeddingsKey, setHasStoredEmbeddingsKey] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [studioProfile, setStudioProfile] = useState<AiStudioProfile>(
+    normalizeStudioProfile({}),
+  );
   const [isActive, setIsActive] = useState(false);
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
   const [maxPerConversation, setMaxPerConversation] = useState(3);
@@ -99,6 +107,7 @@ export function AiConfig() {
         setProvider(data.provider);
         setModel(data.model);
         setSystemPrompt(data.system_prompt ?? '');
+        setStudioProfile(normalizeStudioProfile(data.studio_profile));
         setIsActive(data.is_active);
         setAutoReplyEnabled(data.auto_reply_enabled);
         setMaxPerConversation(data.auto_reply_max_per_conversation ?? 3);
@@ -179,6 +188,7 @@ export function AiConfig() {
     api_key: keyPayload(),
     embeddings_api_key: embeddingsKeyPayload(),
     system_prompt: systemPrompt.trim() || null,
+    studio_profile: studioProfile,
     is_active: isActive,
     auto_reply_enabled: autoReplyEnabled,
     auto_reply_max_per_conversation: maxPerConversation,
@@ -442,6 +452,15 @@ export function AiConfig() {
             </div>
           </CardContent>
         </Card>
+
+        <AiStudioWizard
+          canEdit={canEdit && !disabled}
+          initialProfile={studioProfile}
+          onApply={({ studio_profile, system_prompt }) => {
+            setStudioProfile(studio_profile);
+            setSystemPrompt(system_prompt);
+          }}
+        />
 
         <Card>
           <CardHeader>

@@ -7,6 +7,11 @@ import { generateReply } from '@/lib/ai/generate'
 import { buildSystemPrompt } from '@/lib/ai/defaults'
 import { latestUserMessage } from '@/lib/ai/query'
 import { AiError, type ChatMessage } from '@/lib/ai/types'
+import {
+  estimateConfidence,
+  estimateTokenCostUsd,
+} from '@/lib/ai/studio/profile'
+import { listTools } from '@/lib/platform/tools/registry'
 
 // Keep the tested transcript bounded, mirroring the live context window.
 const MAX_TURNS = 20
@@ -14,12 +19,8 @@ const MAX_TURNS = 20
 /**
  * POST /api/ai/playground  (agent+)
  *
- * Test-chat with the account's agent WITHOUT touching WhatsApp. Runs the
- * exact same path the auto-reply bot uses — knowledge-base retrieval +
- * `auto_reply` system prompt + the configured provider — so what you see
- * here is what a real customer would get. Reads the config even when the
- * master switch is off (requireActive:false) so you can try it before
- * going live. Stateless: the client sends the running transcript each turn.
+ * AI Studio Sandbox — same path as auto-reply, plus an execution
+ * trace (prompt, retrieval, tools, latency, tokens, cost, confidence).
  */
 export async function POST(request: Request) {
   try {
@@ -72,6 +73,7 @@ export async function POST(request: Request) {
       )
     }
 
+    const started = Date.now()
     const knowledge = await retrieveKnowledge(
       supabase,
       accountId,
@@ -84,8 +86,59 @@ export async function POST(request: Request) {
       knowledge,
     })
 
-    const { text, handoff } = await generateReply({ config, systemPrompt, messages })
-    return NextResponse.json({ reply: text, handoff })
+    const { text, handoff, usage } = await generateReply({
+      config,
+      systemPrompt,
+      messages,
+    })
+    const latencyMs = Date.now() - started
+    const toolsAvailable = listTools().map((t) => t.id)
+    const confidence = estimateConfidence({
+      handoff,
+      retrievalCount: knowledge.length,
+      replyLength: text.length,
+    })
+    const estimatedCost =
+      usage != null
+        ? estimateTokenCostUsd(
+            config.provider,
+            usage.promptTokens,
+            usage.completionTokens,
+          )
+        : null
+
+    const sandbox = {
+      prompt_preview: systemPrompt.slice(0, 1200),
+      retrieval: knowledge.map((k) => k.slice(0, 280)),
+      tools: toolsAvailable,
+      latency_ms: latencyMs,
+      tokens: usage,
+      estimated_cost_usd: estimatedCost,
+      confidence,
+    }
+
+    // Best-effort durable trace (migration 043). Ignore missing table.
+    void supabase
+      .from('ai_execution_traces')
+      .insert({
+        account_id: accountId,
+        source: 'sandbox',
+        created_by: userId,
+        payload: {
+          ...sandbox,
+          reply_excerpt: text.slice(0, 400),
+          handoff,
+          model: config.model,
+          provider: config.provider,
+        },
+      })
+      .then(({ error }) => {
+        if (error && error.code !== '42P01') {
+          console.warn('[ai/playground] trace insert:', error.message)
+        }
+      })
+
+    return NextResponse.json({ reply: text, handoff, sandbox })
   } catch (err) {
     if (err instanceof AiError) {
       return NextResponse.json(

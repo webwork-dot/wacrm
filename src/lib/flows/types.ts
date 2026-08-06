@@ -238,6 +238,8 @@ export interface FlowRow {
   trigger_config: KeywordTriggerConfig | FirstInboundTriggerConfig | Record<string, unknown>;
   entry_node_id: string | null;
   fallback_policy: FlowFallbackPolicy;
+  /** Pinned IR from last activate (Wave C1). Null = pre-compiler flow. */
+  active_compiled_version_id?: string | null;
   execution_count: number;
   last_executed_at: string | null;
   created_at: string;
@@ -266,11 +268,16 @@ export interface FlowRunRow {
   conversation_id: string | null;
   status:
     | "active"
+    | "queued"
+    | "waiting"
     | "completed"
     | "handed_off"
     | "timed_out"
     | "paused_by_agent"
-    | "failed";
+    | "failed"
+    | "cancelled";
+  /** IR version this run executes; frozen at start. */
+  compiled_version_id?: string | null;
   current_node_key: string | null;
   last_prompt_message_id: string | null;
   vars: Record<string, unknown>;

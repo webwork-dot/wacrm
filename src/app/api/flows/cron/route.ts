@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { resolveFallbackPolicy } from '@/lib/flows/fallback'
+import { processDueAutomationJobs } from '@/lib/platform/automation/queue'
 
 /**
  * Sweep abandoned active flow runs.
@@ -108,5 +109,7 @@ export async function GET(request: Request) {
     }
   }
 
-  return NextResponse.json({ swept })
+  const queue = await processDueAutomationJobs(50)
+
+  return NextResponse.json({ swept, queue })
 }

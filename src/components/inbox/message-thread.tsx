@@ -217,6 +217,7 @@ export function MessageThread({
   useEffect(() => {
     typingWarnedRef.current = null;
   }, [conversation?.id]);
+
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
@@ -990,6 +991,33 @@ export function MessageThread({
     );
   }, [conversation, patchConversationField]);
 
+  // Ctrl/Cmd+Shift+A assign to me; Ctrl/Cmd+Shift+P toggle pin
+  useEffect(() => {
+    if (!conversation) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      const key = e.key.toLowerCase();
+      if (key === "a") {
+        e.preventDefault();
+        if (user?.id) void handleAssignChange(user.id);
+      } else if (key === "p") {
+        e.preventDefault();
+        void handleTogglePin();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [conversation, user?.id, handleAssignChange, handleTogglePin]);
+
   const handleToggleStar = useCallback(() => {
     if (!conversation) return;
     const next = !conversation.is_starred;
@@ -1335,11 +1363,22 @@ export function MessageThread({
       {primaryPeer && (
         <div
           role="status"
-          className="border-b border-amber-500/20 bg-amber-500/5 px-3 py-1.5 text-xs text-amber-800 dark:text-amber-200 sm:px-4"
+          className="flex items-center justify-between gap-2 border-b border-amber-500/20 bg-amber-500/5 px-3 py-1.5 text-xs text-amber-800 dark:text-amber-200 sm:px-4"
         >
-          {primaryPeer.state === "typing"
-            ? t("peerReplyingBanner", { name: primaryPeer.fullName })
-            : t("peerViewingBanner", { name: primaryPeer.fullName })}
+          <span>
+            {primaryPeer.state === "typing"
+              ? t("peerReplyingBanner", { name: primaryPeer.fullName })
+              : t("peerViewingBanner", { name: primaryPeer.fullName })}
+          </span>
+          {assignedAgentId !== user?.id && (
+            <button
+              type="button"
+              onClick={() => void handleAssignChange(user?.id ?? null)}
+              className="shrink-0 rounded-md bg-amber-600/90 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-amber-600"
+            >
+              {t("claimThread")}
+            </button>
+          )}
         </div>
       )}
 

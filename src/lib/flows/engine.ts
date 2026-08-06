@@ -43,6 +43,10 @@ import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
 import {
+  loadExecutableGraph,
+  type ExecutableGraph,
+} from "@/lib/platform/automation/runtime";
+import {
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
   type DispatchInboundInput,
@@ -310,12 +314,22 @@ async function isDuplicateInbound(
   return (count ?? 0) > 0;
 }
 
+async function resolveExecutableGraph(
+  db: AdminClient,
+  flow: FlowRow,
+  compiledVersionId?: string | null,
+): Promise<ExecutableGraph> {
+  return loadExecutableGraph(flow, compiledVersionId, (flowId) =>
+    loadAllNodes(db, flowId),
+  );
+}
+
 async function findEntryFlow(
   db: AdminClient,
   accountId: string,
   message: ParsedInbound,
   isFirstInbound: boolean,
-): Promise<FlowRow | null> {
+): Promise<ExecutableGraph | null> {
   // Only text messages can match an entry trigger. Interactive replies
   // are responses to existing prompts; they never start a new flow.
   if (message.kind !== "text") return null;
@@ -333,15 +347,17 @@ async function findEntryFlow(
 
   const typed = flows as FlowRow[];
   for (const flow of typed) {
-    if (flow.trigger_type === "keyword") {
+    const graph = await resolveExecutableGraph(db, flow, flow.active_compiled_version_id);
+    const exec = graph.flow;
+    if (exec.trigger_type === "keyword") {
       if (matchesKeywordTrigger(
         message.text,
-        flow.trigger_config as KeywordTriggerConfig,
+        exec.trigger_config as KeywordTriggerConfig,
       )) {
-        return flow;
+        return graph;
       }
-    } else if (flow.trigger_type === "first_inbound_message" && isFirstInbound) {
-      return flow;
+    } else if (exec.trigger_type === "first_inbound_message" && isFirstInbound) {
+      return graph;
     }
     // 'manual' triggers do not auto-start from inbound messages.
   }
@@ -860,24 +876,28 @@ export async function dispatchInboundToFlows(
           outcome: "duplicate_inbound_ignored",
         };
       }
-      // One SELECT for the whole flow's nodes — advance loop is now
-      // in-memory. See loadAllNodes.
-      const nodes = await loadAllNodes(db, activeRun.flow_id);
-      return handleReplyForActiveRun(db, activeRun, input.message, nodes);
+      // Prefer pinned IR for this run; never re-read designer JSON
+      // when a compiled version is set (Wave C1).
+      const parent = await loadFlow(db, activeRun.flow_id);
+      if (!parent) {
+        return { consumed: false, outcome: "no_match" };
+      }
+      const graph = await resolveExecutableGraph(db, parent, activeRun.compiled_version_id);
+      return handleReplyForActiveRun(db, activeRun, input.message, graph.nodes);
     }
 
-    // No active run → look for a flow whose entry trigger matches.
-    const flow = await findEntryFlow(
+    // No active run → look for a flow whose entry trigger matches
+    // against compiled IR (not live draft edits).
+    const matched = await findEntryFlow(
       db,
       input.accountId,
       input.message,
       input.isFirstInboundMessage,
     );
-    if (!flow || !flow.entry_node_id) {
+    if (!matched || !matched.flow.entry_node_id) {
       return { consumed: false, outcome: "no_match" };
     }
-    const nodes = await loadAllNodes(db, flow.id);
-    return startNewRun(db, flow, input, nodes);
+    return startNewRun(db, matched.flow, input, matched.nodes, matched.compiledVersionId);
   } catch (err) {
     console.error(
       "[flows] dispatchInboundToFlows threw:",
@@ -1059,6 +1079,7 @@ async function startNewRun(
   flow: FlowRow,
   input: DispatchInboundInput,
   nodes: Map<string, FlowNodeRow>,
+  compiledVersionId: string | null,
 ): Promise<DispatchInboundResult> {
   // INSERT — partial unique index `idx_one_active_run_per_contact`
   // catches concurrent inserts with 23505. We catch and return as
@@ -1079,6 +1100,8 @@ async function startNewRun(
       conversation_id: input.conversationId,
       status: "active",
       current_node_key: flow.entry_node_id,
+      // Freeze IR for the lifetime of this run (Wave C1).
+      compiled_version_id: compiledVersionId,
     })
     .select("*")
     .maybeSingle();
@@ -1096,6 +1119,8 @@ async function startNewRun(
     flow_id: flow.id,
     trigger_type: flow.trigger_type,
     meta_message_id: input.message.meta_message_id,
+    compiled_version_id: compiledVersionId,
+    execution_source: compiledVersionId ? "ir" : "legacy_nodes",
   });
   // Bump the flow's execution counter — used by the builder UI to
   // surface "X runs since activation" on the flow card.

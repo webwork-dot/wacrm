@@ -2,20 +2,21 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
-import { validateFlowForActivation } from '@/lib/flows/validate'
+import { compileAndPublish } from '@/lib/platform/automation/compiler'
 
 /**
  * POST /api/flows/[id]/activate
  *
  * Body: { status: 'draft' | 'active' | 'archived' }
  *
- * Activating runs the full validator and refuses on any 'error'
- * severity issue. Drafts and archives are unconditional — users
- * need to be able to save broken-work-in-progress and pause flows
- * without first fixing them.
+ * Activating validates + compiles designer JSON into a versioned IR
+ * snapshot and pins it on the flow. Runtime executes that IR only.
  *
- * Returns the updated flow on success; on validation failure returns
- * the full issue list so the builder can highlight each problem.
+ * Drafts and archives are unconditional — users need to be able to
+ * save broken-work-in-progress and pause flows without first fixing them.
+ *
+ * Returns the updated flow on success; on validation/compile failure
+ * returns the full issue list so the builder can highlight each problem.
  */
 
 export async function POST(
@@ -28,19 +29,17 @@ export async function POST(
   // flows_update policy requires `agent`, but the service-role client
   // below bypasses RLS, so enforce the role here (a viewer passes the
   // membership-only ownership check).
+  let accountId: string
+  let userId: string
   try {
-    await requireRole('agent')
+    const ctx = await requireRole('agent')
+    accountId = ctx.accountId
+    userId = ctx.userId
   } catch (err) {
     return toErrorResponse(err)
   }
 
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
 
   const body = (await request.json().catch(() => null)) as
     | { status?: 'draft' | 'active' | 'archived' }
@@ -53,11 +52,12 @@ export async function POST(
     )
   }
 
-  // Ownership via RLS — caller's client.
+  // Ownership via RLS — caller's client, pinned to account.
   const { data: existing } = await supabase
     .from('flows')
-    .select('id')
+    .select('id, account_id')
     .eq('id', id)
+    .eq('account_id', accountId)
     .maybeSingle()
   if (!existing) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -66,40 +66,18 @@ export async function POST(
   const admin = supabaseAdmin()
 
   if (status === 'active') {
-    // Re-load with the full payload the validator needs.
-    const [{ data: flow }, { data: nodes }] = await Promise.all([
-      admin
-        .from('flows')
-        .select('name, trigger_type, trigger_config, entry_node_id')
-        .eq('id', id)
-        .maybeSingle(),
-      admin
-        .from('flow_nodes')
-        .select('node_key, node_type, config')
-        .eq('flow_id', id),
-    ])
-    if (!flow) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    }
-    const issues = validateFlowForActivation(
-      flow as {
-        name: string
-        trigger_type: 'keyword' | 'first_inbound_message' | 'manual'
-        trigger_config: Record<string, unknown>
-        entry_node_id: string | null
-      },
-      (nodes ?? []) as Array<{
-        node_key: string
-        node_type: string
-        config: Record<string, unknown>
-      }>,
-    )
-    const blockers = issues.filter((i) => i.severity === 'error')
-    if (blockers.length > 0) {
+    // Compile designer → IR (includes validation). Refuse activate
+    // without a pinned compiled version.
+    const compiled = await compileAndPublish({
+      flowId: id,
+      accountId,
+      compiledBy: userId,
+    })
+    if (!compiled.ok) {
       return NextResponse.json(
         {
           error: 'Cannot activate flow — fix the issues below first.',
-          issues,
+          issues: compiled.issues,
         },
         { status: 422 },
       )
@@ -110,6 +88,7 @@ export async function POST(
     .from('flows')
     .update({ status, updated_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('account_id', accountId)
     .select()
     .maybeSingle()
   if (error) {

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AiProvider, AiUsage } from './types'
+import { recordUsageEvent } from '@/lib/platform/plans'
 
 export interface LogAiUsageArgs {
   accountId: string
@@ -45,6 +46,12 @@ export async function logAiUsage(
     if (error) {
       console.error('[ai usage] log insert failed:', error)
     }
+    void recordUsageEvent({
+      accountId: args.accountId,
+      eventType: args.mode === 'draft' ? 'ai.draft' : 'ai.auto_reply',
+      meta: { provider: args.provider, model: args.model },
+      db,
+    })
   } catch (err) {
     console.error('[ai usage] log insert threw:', err)
   }

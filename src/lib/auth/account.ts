@@ -149,11 +149,32 @@ export async function getCurrentAccount(): Promise<AccountContext> {
   // RLS, so it stays robust against cache staleness and older schemas.
   const { data: account, error: accountErr } = await supabase
     .from("accounts")
-    .select("id, name")
+    .select("id, name, status")
     .eq("id", data.account_id)
     .maybeSingle();
 
   if (accountErr) {
+    // Pre-044: status column may be missing — retry without it.
+    if (
+      accountErr.code === "42703" ||
+      /does not exist/i.test(accountErr.message)
+    ) {
+      const legacy = await supabase
+        .from("accounts")
+        .select("id, name")
+        .eq("id", data.account_id)
+        .maybeSingle();
+      if (legacy.error || !legacy.data) {
+        throw new ForbiddenError("Could not load account context");
+      }
+      return {
+        supabase,
+        userId: user.id,
+        accountId: data.account_id,
+        role: data.account_role,
+        account: { id: legacy.data.id, name: legacy.data.name },
+      };
+    }
     console.error("[getCurrentAccount] account fetch error:", accountErr);
     throw new ForbiddenError("Could not load account context");
   }
@@ -161,6 +182,10 @@ export async function getCurrentAccount(): Promise<AccountContext> {
     // account_id points at no readable account row — orphaned profile
     // or an RLS gap. Same "can't scope this user" outcome as above.
     throw new ForbiddenError("Profile is not linked to an account");
+  }
+
+  if ((account as { status?: string }).status === "suspended") {
+    throw new ForbiddenError("Account is suspended");
   }
 
   return {

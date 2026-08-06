@@ -405,6 +405,17 @@ export function ConversationList({
     });
   }, [applyBulkPatch]);
 
+  const bulkClose = useCallback(async () => {
+    await applyBulkPatch({
+      status: "closed",
+      ...slaPatchOnResolved(),
+    });
+  }, [applyBulkPatch]);
+
+  const bulkSpam = useCallback(async () => {
+    await applyBulkPatch({ status: "spam" });
+  }, [applyBulkPatch]);
+
   const bulkAddTag = useCallback(
     async (tagId: string) => {
       if (!accountId || selectedIds.length === 0) return;
@@ -635,6 +646,22 @@ export function ConversationList({
               className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               {t("bulkResolve")}
+            </button>
+            <button
+              type="button"
+              disabled={bulkBusy}
+              onClick={bulkClose}
+              className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              {t("bulkClose")}
+            </button>
+            <button
+              type="button"
+              disabled={bulkBusy}
+              onClick={bulkSpam}
+              className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              {t("bulkSpam")}
             </button>
             {tags.length > 0 && (
               <DropdownMenu>

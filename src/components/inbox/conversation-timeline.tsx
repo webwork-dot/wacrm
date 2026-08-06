@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
 import type { Conversation, ConversationEvent } from "@/types";
 import { formatInboxListTime, formatInboxDayLabel } from "@/lib/inbox/format-time";
 import { Loader2 } from "lucide-react";
@@ -10,46 +11,49 @@ interface ConversationTimelineProps {
   conversation: Conversation;
 }
 
-function eventLabel(ev: ConversationEvent): string {
+function eventLabel(ev: ConversationEvent, actorName?: string | null): string {
   const payload = ev.payload ?? {};
+  const by = actorName ? ` · ${actorName}` : "";
   switch (ev.event_type) {
     case "assigned":
-      return `Assigned${payload.to_name ? ` to ${payload.to_name}` : ""}`;
+      return `Assigned${payload.to_name ? ` to ${payload.to_name}` : ""}${by}`;
     case "unassigned":
-      return "Unassigned";
+      return `Unassigned${by}`;
     case "status_changed":
-      return `Status → ${payload.status ?? "updated"}`;
+      return `Status → ${payload.status ?? "updated"}${by}`;
     case "pinned":
-      return "Pinned";
+      return `Pinned${by}`;
     case "unpinned":
-      return "Unpinned";
+      return `Unpinned${by}`;
     case "starred":
-      return "Starred";
+      return `Starred${by}`;
     case "unstarred":
-      return "Unstarred";
+      return `Unstarred${by}`;
     case "snoozed":
-      return "Snoozed";
+      return `Snoozed${by}`;
     case "unsnoozed":
-      return "Snooze cleared";
+      return `Snooze cleared${by}`;
     case "replied":
-      return "Agent replied";
+      return `Agent replied${by}`;
     case "ai_replied":
       return "AI replied";
     case "template_sent":
-      return `Template sent${payload.name ? `: ${payload.name}` : ""}`;
+      return `Template sent${payload.name ? `: ${payload.name}` : ""}${by}`;
     case "note_added":
-      return "Internal note added";
+      return `Internal note added${by}`;
     case "resolved":
-      return "Conversation resolved";
+      return `Conversation resolved${by}`;
     case "created":
       return "Conversation created";
     default:
-      return String(ev.event_type).replace(/_/g, " ");
+      return `${String(ev.event_type).replace(/_/g, " ")}${by}`;
   }
 }
 
 export function ConversationTimeline({ conversation }: ConversationTimelineProps) {
+  const { accountId } = useAuth();
   const [events, setEvents] = useState<ConversationEvent[]>([]);
+  const [actorNames, setActorNames] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -61,15 +65,40 @@ export function ConversationTimeline({ conversation }: ConversationTimelineProps
       .eq("conversation_id", conversation.id)
       .order("created_at", { ascending: false })
       .limit(50);
-    setEvents((data as ConversationEvent[]) ?? []);
+    const rows = (data as ConversationEvent[]) ?? [];
+    setEvents(rows);
+
+    const actorIds = [
+      ...new Set(
+        rows
+          .map((e) => e.actor_user_id)
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    if (actorIds.length > 0 && accountId) {
+      const { data: profiles } = await supabase
+        .from("profiles")
+        .select("user_id, full_name, email")
+        .eq("account_id", accountId)
+        .in("user_id", actorIds);
+      const map = new Map<string, string>();
+      for (const p of profiles ?? []) {
+        map.set(
+          p.user_id as string,
+          (p.full_name as string) || (p.email as string) || "Agent",
+        );
+      }
+      setActorNames(map);
+    } else {
+      setActorNames(new Map());
+    }
     setLoading(false);
-  }, [conversation.id]);
+  }, [conversation.id, accountId]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  // Synthetic milestones from the conversation row itself.
   const milestones: { at: string; label: string }[] = [];
   if (conversation.created_at) {
     milestones.push({
@@ -106,7 +135,10 @@ export function ConversationTimeline({ conversation }: ConversationTimelineProps
     ...events.map((e) => ({
       id: e.id,
       at: e.created_at,
-      label: eventLabel(e),
+      label: eventLabel(
+        e,
+        e.actor_user_id ? actorNames.get(e.actor_user_id) : null,
+      ),
     })),
     ...milestones.map((m, i) => ({
       id: `m-${i}-${m.at}`,
