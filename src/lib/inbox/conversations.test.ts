@@ -193,5 +193,20 @@ describe("matchesInboxFilter", () => {
         "agent-1",
       ),
     ).toBe(true);
+    expect(
+      matchesInboxFilter(
+        { ...mine, status: "resolved" },
+        "resolved",
+        "agent-1",
+      ),
+    ).toBe(true);
+    expect(matchesInboxFilter(mine, "unassigned", "agent-1")).toBe(false);
+    expect(
+      matchesInboxFilter(
+        { ...mine, assigned_agent_id: undefined },
+        "unassigned",
+        "agent-1",
+      ),
+    ).toBe(true);
   });
 });

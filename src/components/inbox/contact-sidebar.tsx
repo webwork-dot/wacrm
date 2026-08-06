@@ -26,6 +26,9 @@ import {
   getCustomerServiceWindow,
 } from "@/lib/inbox/format-time";
 
+import { ConversationNotes } from "./conversation-notes";
+import { ConversationTimeline } from "./conversation-timeline";
+
 interface ContactSidebarProps {
   contact: Contact | null;
   conversation?: Conversation | null;
@@ -230,11 +233,21 @@ export function ContactSidebar({
             />
             <StatusRow
               icon={<User className="h-3.5 w-3.5" />}
-              label={tSidebar("assignedAgent")}
+              label={tSidebar("owner")}
               value={
                 assignedAgentName ||
                 resolvedAgentName ||
                 tSidebar("unassigned")
+              }
+            />
+            <StatusRow
+              icon={<TagIcon className="h-3.5 w-3.5" />}
+              label={tSidebar("status")}
+              value={
+                conversation?.status
+                  ? conversation.status.charAt(0).toUpperCase() +
+                    conversation.status.slice(1)
+                  : tSidebar("none")
               }
             />
             <StatusRow
@@ -345,6 +358,18 @@ export function ContactSidebar({
           </div>
 
           <div className="my-4 border-t border-border" />
+
+          {conversation && (
+            <>
+              <ConversationNotes
+                conversationId={conversation.id}
+                contactId={contact.id}
+              />
+              <div className="my-4 border-t border-border" />
+              <ConversationTimeline conversation={conversation} />
+              <div className="my-4 border-t border-border" />
+            </>
+          )}
 
           <div>
             <div className="flex items-center gap-2 px-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">

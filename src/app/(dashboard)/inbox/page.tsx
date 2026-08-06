@@ -564,21 +564,39 @@ function InboxPageInner() {
   const handleAssignChange = useCallback(
     (conversationId: string, assignedAgentId: string | null) => {
       setConversations((prev) =>
-        prev.map((c) =>
-          c.id === conversationId
-            ? { ...c, assigned_agent_id: assignedAgentId ?? undefined }
-            : c
-        )
+        sortConversations(
+          prev.map((c) =>
+            c.id === conversationId
+              ? { ...c, assigned_agent_id: assignedAgentId ?? undefined }
+              : c,
+          ),
+        ),
       );
       if (activeConversation?.id === conversationId) {
         setActiveConversation((prev) =>
           prev
             ? { ...prev, assigned_agent_id: assignedAgentId ?? undefined }
-            : prev
+            : prev,
         );
       }
     },
-    [activeConversation]
+    [activeConversation],
+  );
+
+  const handleConversationPatch = useCallback(
+    (conversationId: string, patch: Partial<Conversation>) => {
+      setConversations((prev) =>
+        sortConversations(
+          prev.map((c) => (c.id === conversationId ? { ...c, ...patch } : c)),
+        ),
+      );
+      if (activeConversation?.id === conversationId) {
+        setActiveConversation((prev) =>
+          prev ? { ...prev, ...patch } : prev,
+        );
+      }
+    },
+    [activeConversation],
   );
 
   // On mobile (<lg) we show a SINGLE pane — either the list or the
@@ -616,6 +634,8 @@ function InboxPageInner() {
             onSelect={handleSelectConversation}
             conversations={conversations}
             onConversationsLoaded={handleConversationsLoaded}
+            onConversationPatch={handleConversationPatch}
+            onCloseActive={handleCloseConversation}
             resyncToken={resyncToken}
           />
         </div>
@@ -645,6 +665,7 @@ function InboxPageInner() {
             onUpdateMessage={handleUpdateMessage}
             onStatusChange={handleStatusChange}
             onAssignChange={handleAssignChange}
+            onConversationPatch={handleConversationPatch}
             onBack={handleCloseConversation}
             resyncToken={resyncToken}
             onRefresh={handleManualRefresh}

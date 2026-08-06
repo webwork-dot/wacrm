@@ -118,6 +118,8 @@ interface MessageComposerProps {
   onOpenTemplates: () => void;
   replyTo?: ReplyDraft | null;
   onClearReply?: () => void;
+  /** Fires while the agent types — drives collision-detection presence. */
+  onTypingChange?: (typing: boolean) => void;
 }
 
 function formatDuration(seconds: number): string {
@@ -140,6 +142,7 @@ export function MessageComposer({
   onOpenTemplates,
   replyTo,
   onClearReply,
+  onTypingChange,
 }: MessageComposerProps) {
   const t = useTranslations("Inbox.composer");
 
@@ -228,13 +231,14 @@ export function MessageComposer({
     try {
       onSend(trimmed, replyTo?.id);
       setText("");
+      onTypingChange?.(false);
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
       }
     } finally {
       setSending(false);
     }
-  }, [text, sending, sessionExpired, onSend, replyTo?.id]);
+  }, [text, sending, sessionExpired, onSend, replyTo?.id, onTypingChange]);
 
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [aiSuggestLoading, setAiSuggestLoading] = useState(false);
@@ -244,12 +248,13 @@ export function MessageComposer({
       const next = e.target.value;
       setText(next);
       adjustHeight();
+      onTypingChange?.(next.trim().length > 0);
       // Typing `/` at the start (or alone) opens quick replies — WATI-style.
       if (next === "/" || /^\/[a-z0-9_-]*$/i.test(next)) {
         setQuickReplyOpen(true);
       }
     },
-    [adjustHeight],
+    [adjustHeight, onTypingChange],
   );
 
   const handleKeyDown = useCallback(

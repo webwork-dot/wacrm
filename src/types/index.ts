@@ -155,7 +155,65 @@ export interface ContactNote {
   created_at: string;
 }
 
-export type ConversationStatus = 'open' | 'pending' | 'closed';
+/** Internal conversation notes (migration 039) — markdown + @mentions. */
+export interface ConversationNote {
+  id: string;
+  account_id: string;
+  conversation_id: string;
+  contact_id?: string | null;
+  user_id: string;
+  body: string;
+  mentions: string[];
+  created_at: string;
+  edited_at?: string | null;
+  /** Joined author profile when selected. */
+  author?: { full_name?: string | null; email?: string } | null;
+}
+
+export type ConversationEventType =
+  | "assigned"
+  | "unassigned"
+  | "status_changed"
+  | "pinned"
+  | "unpinned"
+  | "starred"
+  | "unstarred"
+  | "snoozed"
+  | "unsnoozed"
+  | "replied"
+  | "ai_replied"
+  | "template_sent"
+  | "note_added"
+  | "resolved"
+  | "created";
+
+export interface ConversationEvent {
+  id: string;
+  account_id: string;
+  conversation_id: string;
+  contact_id?: string | null;
+  actor_user_id?: string | null;
+  event_type: ConversationEventType | string;
+  payload: Record<string, unknown>;
+  created_at: string;
+  actor?: { full_name?: string | null; email?: string } | null;
+}
+
+export interface InboxSettings {
+  account_id: string;
+  first_response_minutes: number;
+  next_response_minutes: number;
+  resolution_minutes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ConversationStatus =
+  | "open"
+  | "pending"
+  | "resolved"
+  | "closed"
+  | "spam";
 
 export interface Conversation {
   id: string;
@@ -163,12 +221,27 @@ export interface Conversation {
   contact_id: string;
   status: ConversationStatus;
   assigned_agent_id?: string;
+  /** Who last assigned this conversation (migration 038). */
+  assigned_by?: string | null;
+  assigned_at?: string | null;
+  /** Agent who last sent an outbound reply (migration 038). */
+  last_replied_by?: string | null;
   last_message_text?: string;
   last_message_at?: string;
   /** Last inbound customer message — drives Meta 24h customer-service window. */
   last_customer_message_at?: string | null;
   /** Pinned threads stay above unread/read groups in the inbox list. */
   is_pinned?: boolean;
+  /** Favorites — separate from pin (migration 038). */
+  is_starred?: boolean;
+  /** Hidden from default list until this timestamp (migration 038). */
+  snoozed_until?: string | null;
+  /** SLA timestamps (migration 040). */
+  first_response_due_at?: string | null;
+  next_response_due_at?: string | null;
+  resolution_due_at?: string | null;
+  first_responded_at?: string | null;
+  resolved_at?: string | null;
   unread_count: number;
   created_at: string;
   updated_at: string;
@@ -191,7 +264,14 @@ export interface Conversation {
 // Notifications (migration 027)
 // ============================================================
 
-export type NotificationType = 'conversation_assigned';
+export type NotificationType =
+  | "conversation_assigned"
+  | "mention"
+  | "new_message"
+  | "ai_completed"
+  | "campaign_completed"
+  | "conversation_resolved"
+  | "message_failed";
 
 export interface Notification {
   id: string;

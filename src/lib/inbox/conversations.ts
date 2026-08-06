@@ -1,4 +1,5 @@
 import type { Conversation, Contact, Tag } from "@/types";
+import { getCustomerServiceWindow } from "@/lib/inbox/format-time";
 
 /**
  * Conversation select that embeds the contact plus its tags, so the Inbox
@@ -9,18 +10,28 @@ import type { Conversation, Contact, Tag } from "@/types";
 export const CONVERSATION_SELECT =
   "*, contact:contacts(*, contact_tags(tags(*)))";
 
-/** Inbox list filters (WATI / Respond.io style). */
+/** Inbox list filters (WATI / Respond.io / enterprise Wave A). */
 export type InboxFilter =
   | "all"
   | "unread"
   | "mine"
   | "assigned"
+  | "unassigned"
+  | "starred"
+  | "pinned"
+  | "snoozed"
   | "open"
+  | "pending"
   | "resolved"
+  | "closed"
+  | "spam"
   | "waiting"
   | "ai"
   | "campaign"
-  | "broadcast";
+  | "broadcast"
+  | "session_active"
+  | "session_expired"
+  | "vip";
 
 /**
  * Sort for the conversation list:
@@ -46,6 +57,16 @@ export function sortConversations(conversations: Conversation[]): Conversation[]
     );
     return (timeB || 0) - (timeA || 0);
   });
+}
+
+/** True when the conversation is currently snoozed (hidden from default list). */
+export function isSnoozed(
+  conversation: Conversation,
+  now: Date = new Date(),
+): boolean {
+  if (!conversation.snoozed_until) return false;
+  const until = Date.parse(conversation.snoozed_until);
+  return Number.isFinite(until) && until > now.getTime();
 }
 
 /**
@@ -87,8 +108,10 @@ export function matchesInboxFilter(
   conversation: Conversation,
   filter: InboxFilter,
   currentUserId: string | null,
-  opts?: { broadcastContactIds?: Set<string> },
+  opts?: { broadcastContactIds?: Set<string>; now?: Date },
 ): boolean {
+  const now = opts?.now ?? new Date();
+
   switch (filter) {
     case "all":
       return true;
@@ -100,14 +123,28 @@ export function matchesInboxFilter(
       );
     case "assigned":
       return !!conversation.assigned_agent_id;
+    case "unassigned":
+      return !conversation.assigned_agent_id;
+    case "starred":
+      return !!conversation.is_starred;
+    case "pinned":
+      return !!conversation.is_pinned;
+    case "snoozed":
+      return isSnoozed(conversation, now);
     case "open":
       return conversation.status === "open";
-    case "resolved":
-      return conversation.status === "closed";
+    case "pending":
     case "waiting":
       return conversation.status === "pending";
+    case "resolved":
+      return (
+        conversation.status === "resolved" || conversation.status === "closed"
+      );
+    case "closed":
+      return conversation.status === "closed";
+    case "spam":
+      return conversation.status === "spam";
     case "ai":
-      // Threads the AI bot has actually engaged (or handed off from).
       return (
         (conversation.ai_reply_count ?? 0) > 0 ||
         !!conversation.ai_handoff_summary
@@ -117,6 +154,20 @@ export function matchesInboxFilter(
       const ids = opts?.broadcastContactIds;
       if (!ids || !conversation.contact_id) return false;
       return ids.has(conversation.contact_id);
+    }
+    case "session_active":
+      return !getCustomerServiceWindow(
+        conversation.last_customer_message_at,
+        now,
+      ).expired;
+    case "session_expired":
+      return getCustomerServiceWindow(
+        conversation.last_customer_message_at,
+        now,
+      ).expired;
+    case "vip": {
+      const tags = conversation.contact?.tags ?? [];
+      return tags.some((t) => t.name.trim().toLowerCase() === "vip");
     }
     default:
       return true;
@@ -182,4 +233,31 @@ export function matchesContactFilters(
   }
 
   return true;
+}
+
+/** Preset snooze targets relative to `now`. */
+export function snoozeUntil(
+  preset: "30m" | "1h" | "tomorrow" | "next_monday",
+  now: Date = new Date(),
+): Date {
+  const d = new Date(now);
+  switch (preset) {
+    case "30m":
+      d.setMinutes(d.getMinutes() + 30);
+      return d;
+    case "1h":
+      d.setHours(d.getHours() + 1);
+      return d;
+    case "tomorrow":
+      d.setDate(d.getDate() + 1);
+      d.setHours(9, 0, 0, 0);
+      return d;
+    case "next_monday": {
+      const day = d.getDay(); // 0 Sun … 6 Sat
+      const daysUntilMon = day === 0 ? 1 : day === 1 ? 7 : 8 - day;
+      d.setDate(d.getDate() + daysUntilMon);
+      d.setHours(9, 0, 0, 0);
+      return d;
+    }
+  }
 }

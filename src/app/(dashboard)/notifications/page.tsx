@@ -1,21 +1,44 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import type { Notification } from "@/types";
-import { Bell, CheckCheck, Loader2, UserPlus } from "lucide-react";
-import { formatInboxListTime } from "@/lib/inbox/format-time";
+import {
+  Bell,
+  Bot,
+  CheckCheck,
+  Loader2,
+  MessageSquare,
+  Radio,
+  UserPlus,
+  AlertTriangle,
+  AtSign,
+  CheckCircle2,
+} from "lucide-react";
+import { formatInboxListTime, formatInboxDayLabel } from "@/lib/inbox/format-time";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { isToday, isYesterday } from "date-fns";
 
-// Icon per notification type. Only one type exists today
-// (conversation_assigned) but this keeps future types a one-line add.
 const TYPE_ICON: Record<Notification["type"], typeof Bell> = {
   conversation_assigned: UserPlus,
+  mention: AtSign,
+  new_message: MessageSquare,
+  ai_completed: Bot,
+  campaign_completed: Radio,
+  conversation_resolved: CheckCircle2,
+  message_failed: AlertTriangle,
 };
+
+function sectionFor(iso: string): "Today" | "Yesterday" | "Earlier" {
+  const d = new Date(iso);
+  if (isToday(d)) return "Today";
+  if (isYesterday(d)) return "Yesterday";
+  return "Earlier";
+}
 
 export default function NotificationsPage() {
   const router = useRouter();
@@ -47,8 +70,6 @@ export default function NotificationsPage() {
     load();
   }, [load]);
 
-  // Realtime — new assignments appear without a refresh, and a
-  // "mark all read" fired from another tab/device stays in sync here.
   useEffect(() => {
     const supabase = createClient();
     const channel = supabase
@@ -87,8 +108,6 @@ export default function NotificationsPage() {
 
   const markRead = useCallback(
     async (id: string) => {
-      // Optimistic — the row is already visually "read" by the time the
-      // request lands, so the UI doesn't wait on the round-trip.
       setNotifications(
         (prev) =>
           prev?.map((n) =>
@@ -121,11 +140,8 @@ export default function NotificationsPage() {
     [markRead, router],
   );
 
-  const unreadIds = notifications?.filter((n) => !n.read_at).map((n) => n.id) ?? [];
-  // Prefer the loaded list (same realtime channel as this page) over a
-  // second `useUnreadNotifications` subscription — that hook already runs
-  // in the sidebar under a fixed channel name, and dual subscribe crashes
-  // the notifications route under supabase-js realtime.
+  const unreadIds =
+    notifications?.filter((n) => !n.read_at).map((n) => n.id) ?? [];
   const unreadCount = unreadIds.length;
 
   const markAllRead = useCallback(async () => {
@@ -133,7 +149,8 @@ export default function NotificationsPage() {
     setMarkingAll(true);
     const now = new Date().toISOString();
     setNotifications(
-      (prev) => prev?.map((n) => (n.read_at ? n : { ...n, read_at: now })) ?? prev,
+      (prev) =>
+        prev?.map((n) => (n.read_at ? n : { ...n, read_at: now })) ?? prev,
     );
     const supabase = createClient();
     const { error: updateErr } = await supabase
@@ -146,6 +163,18 @@ export default function NotificationsPage() {
       load();
     }
   }, [unreadIds.length, load]);
+
+  const grouped = useMemo(() => {
+    const sections: Record<"Today" | "Yesterday" | "Earlier", Notification[]> = {
+      Today: [],
+      Yesterday: [],
+      Earlier: [],
+    };
+    for (const n of notifications ?? []) {
+      sections[sectionFor(n.created_at)].push(n);
+    }
+    return sections;
+  }, [notifications]);
 
   if (error) {
     return (
@@ -173,13 +202,13 @@ export default function NotificationsPage() {
           <h1 className="text-2xl font-bold text-foreground">
             Notifications
             {unreadCount > 0 && (
-              <span className="ml-2 text-lg font-semibold text-primary tabular-nums">
+              <span className="ml-2 text-lg font-semibold tabular-nums text-primary">
                 ({unreadCount})
               </span>
             )}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Conversations other teammates assign to you show up here.
+            Mentions, assignments, and inbox activity — grouped by day.
           </p>
         </div>
         <Button
@@ -203,75 +232,95 @@ export default function NotificationsPage() {
             <Bell className="h-6 w-6 text-primary" />
           </div>
           <p className="mt-3 text-sm font-medium text-foreground">
-            No notifications yet
+            No activity yet
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            You&apos;ll see an alert here when someone assigns you a
-            conversation.
+            Assignments, mentions, and resolved conversations show up here.
           </p>
         </div>
       ) : (
-        <ul className="space-y-2">
-          {notifications.map((n) => {
-            const Icon = TYPE_ICON[n.type] ?? Bell;
-            const isUnread = !n.read_at;
+        <div className="space-y-6">
+          {(["Today", "Yesterday", "Earlier"] as const).map((section) => {
+            const items = grouped[section];
+            if (items.length === 0) return null;
             return (
-              <li key={n.id}>
-                <button
-                  type="button"
-                  onClick={() => handleClick(n)}
-                  className={cn(
-                    "flex w-full items-start gap-3 rounded-xl border p-4 text-left transition-colors",
-                    isUnread
-                      ? "border-primary/30 bg-primary/5 hover:border-primary/50"
-                      : "border-border bg-card hover:border-border/70",
-                  )}
-                >
-                  <div
-                    className={cn(
-                      "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg",
-                      isUnread ? "bg-primary/15" : "bg-muted",
-                    )}
-                    aria-hidden
-                  >
-                    <Icon
-                      className={cn(
-                        "h-5 w-5",
-                        isUnread ? "text-primary" : "text-muted-foreground",
-                      )}
-                    />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={cn(
-                          "truncate text-sm font-semibold",
-                          isUnread ? "text-foreground" : "text-muted-foreground",
-                        )}
-                      >
-                        {n.title}
-                      </span>
-                      {isUnread && (
-                        <span
-                          aria-label="Unread"
-                          className="h-2 w-2 flex-shrink-0 rounded-full bg-primary"
-                        />
-                      )}
-                    </div>
-                    {n.body && (
-                      <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                        {n.body}
-                      </p>
-                    )}
-                    <p className="mt-1 text-[11px] text-muted-foreground/70">
-                      {formatInboxListTime(n.created_at)}
-                    </p>
-                  </div>
-                </button>
-              </li>
+              <section key={section}>
+                <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  {section}
+                </h2>
+                <ul className="space-y-2">
+                  {items.map((n) => {
+                    const Icon = TYPE_ICON[n.type] ?? Bell;
+                    const isUnread = !n.read_at;
+                    return (
+                      <li key={n.id}>
+                        <button
+                          type="button"
+                          onClick={() => handleClick(n)}
+                          className={cn(
+                            "flex w-full items-start gap-3 rounded-xl border p-4 text-left transition-colors",
+                            isUnread
+                              ? "border-primary/30 bg-primary/5 hover:border-primary/50"
+                              : "border-border bg-card hover:border-border/70",
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg",
+                              isUnread ? "bg-primary/15" : "bg-muted",
+                            )}
+                            aria-hidden
+                          >
+                            <Icon
+                              className={cn(
+                                "h-5 w-5",
+                                isUnread
+                                  ? "text-primary"
+                                  : "text-muted-foreground",
+                              )}
+                            />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={cn(
+                                  "truncate text-sm font-semibold",
+                                  isUnread
+                                    ? "text-foreground"
+                                    : "text-muted-foreground",
+                                )}
+                              >
+                                {n.title}
+                              </span>
+                              {isUnread && (
+                                <span
+                                  aria-label="Unread"
+                                  className="h-2 w-2 flex-shrink-0 rounded-full bg-primary"
+                                />
+                              )}
+                            </div>
+                            {n.body && (
+                              <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                                {n.body}
+                              </p>
+                            )}
+                            <p className="mt-1 text-[11px] text-muted-foreground/70">
+                              {section === "Earlier"
+                                ? formatInboxDayLabel(n.created_at)
+                                : formatInboxListTime(n.created_at)}
+                              {" · "}
+                              {n.type.replace(/_/g, " ")}
+                            </p>
+                          </div>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
             );
           })}
-        </ul>
+        </div>
       )}
     </div>
   );

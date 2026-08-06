@@ -10,12 +10,24 @@ import {
   matchesInboxSearch,
   normalizeConversations,
   sortConversations,
+  isSnoozed,
   type InboxFilter,
 } from "@/lib/inbox/conversations";
+import { computeInboxAnalytics } from "@/lib/inbox/analytics";
 import { formatInboxListTime } from "@/lib/inbox/format-time";
+import { slaPatchOnResolved } from "@/lib/inbox/sla";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
-import { Search, ChevronDown, X, Pin } from "lucide-react";
+import {
+  Search,
+  ChevronDown,
+  X,
+  Pin,
+  Star,
+  CheckSquare,
+  Square,
+  Download,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
 import { Input } from "@/components/ui/input";
 import {
@@ -26,12 +38,18 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { toast } from "sonner";
 
 interface ConversationListProps {
   activeConversationId: string | null;
   onSelect: (conversation: Conversation) => void;
   conversations: Conversation[];
   onConversationsLoaded: (conversations: Conversation[]) => void;
+  onConversationPatch?: (
+    conversationId: string,
+    patch: Partial<Conversation>,
+  ) => void;
+  onCloseActive?: () => void;
   /**
    * Increment to force the fetch effect below to refire. The parent
    * bumps this on realtime reconnect / tab visibility → visible so the
@@ -44,7 +62,9 @@ interface ConversationListProps {
 const STATUS_COLORS: Record<ConversationStatus, string> = {
   open: "bg-primary",
   pending: "bg-amber-500",
+  resolved: "bg-emerald-500",
   closed: "bg-muted-foreground",
+  spam: "bg-red-500",
 };
 
 export function ConversationList({
@@ -52,11 +72,14 @@ export function ConversationList({
   onSelect,
   conversations,
   onConversationsLoaded,
+  onConversationPatch,
+  onCloseActive,
   resyncToken = 0,
 }: ConversationListProps) {
   const t = useTranslations("Inbox.conversationList");
-  const { user } = useAuth();
+  const { user, accountId } = useAuth();
   const currentUserId = user?.id ?? null;
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const FILTER_OPTIONS: { label: string; value: InboxFilter }[] = useMemo(
     () => [
@@ -64,12 +87,22 @@ export function ConversationList({
       { label: t("filterUnread"), value: "unread" },
       { label: t("filterMine"), value: "mine" },
       { label: t("filterAssigned"), value: "assigned" },
+      { label: t("filterUnassigned"), value: "unassigned" },
+      { label: t("filterStarred"), value: "starred" },
+      { label: t("filterPinned"), value: "pinned" },
+      { label: t("filterSnoozed"), value: "snoozed" },
       { label: t("filterOpen"), value: "open" },
+      { label: t("filterPending"), value: "pending" },
       { label: t("filterResolved"), value: "resolved" },
+      { label: t("filterClosed"), value: "closed" },
+      { label: t("filterSpam"), value: "spam" },
       { label: t("filterWaiting"), value: "waiting" },
       { label: t("filterAi"), value: "ai" },
       { label: t("filterCampaign"), value: "campaign" },
       { label: t("filterBroadcast"), value: "broadcast" },
+      { label: t("filterSessionActive"), value: "session_active" },
+      { label: t("filterSessionExpired"), value: "session_expired" },
+      { label: t("filterVip"), value: "vip" },
     ],
     [t],
   );
@@ -85,6 +118,15 @@ export function ConversationList({
   );
   /** Extra conversation ids matched via message / notes / deals search. */
   const [deepMatchIds, setDeepMatchIds] = useState<Set<string> | null>(null);
+  /** Tick so snoozed rows reappear when their timer expires. */
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   const onConversationsLoadedRef = useRef(onConversationsLoaded);
   useEffect(() => {
@@ -235,11 +277,18 @@ export function ConversationList({
   }, [tags]);
 
   const filtered = useMemo(() => {
+    const now = new Date(nowTick);
     let result = conversations;
+
+    // Hide snoozed from the default list unless viewing the Snoozed filter.
+    if (filter !== "snoozed") {
+      result = result.filter((c) => !isSnoozed(c, now));
+    }
 
     result = result.filter((c) =>
       matchesInboxFilter(c, filter, currentUserId, {
         broadcastContactIds,
+        now,
       }),
     );
 
@@ -270,6 +319,203 @@ export function ConversationList({
     currentUserId,
     broadcastContactIds,
     deepMatchIds,
+    nowTick,
+  ]);
+
+  const analytics = useMemo(
+    () => computeInboxAnalytics(conversations, new Date(nowTick)),
+    [conversations, nowTick],
+  );
+
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }, []);
+
+  const clearSelection = useCallback(() => setSelectedIds([]), []);
+
+  const selectAllFiltered = useCallback(() => {
+    setSelectedIds(filtered.map((c) => c.id));
+  }, [filtered]);
+
+  const applyBulkPatch = useCallback(
+    async (patch: Partial<Conversation>) => {
+      if (selectedIds.length === 0) return;
+      setBulkBusy(true);
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("conversations")
+        .update(patch)
+        .in("id", selectedIds);
+      setBulkBusy(false);
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+      for (const id of selectedIds) {
+        onConversationPatch?.(id, patch);
+      }
+      clearSelection();
+    },
+    [selectedIds, onConversationPatch, clearSelection],
+  );
+
+  const bulkAssignMe = useCallback(async () => {
+    if (!currentUserId) return;
+    const nowIso = new Date().toISOString();
+    await applyBulkPatch({
+      assigned_agent_id: currentUserId,
+      assigned_by: currentUserId,
+      assigned_at: nowIso,
+    });
+  }, [applyBulkPatch, currentUserId]);
+
+  const bulkUnassign = useCallback(async () => {
+    if (selectedIds.length === 0) return;
+    setBulkBusy(true);
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("conversations")
+      .update({
+        assigned_agent_id: null,
+        assigned_by: null,
+        assigned_at: null,
+      })
+      .in("id", selectedIds);
+    setBulkBusy(false);
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    for (const id of selectedIds) {
+      onConversationPatch?.(id, {
+        assigned_agent_id: undefined,
+        assigned_by: null,
+        assigned_at: null,
+      });
+    }
+    clearSelection();
+  }, [selectedIds, onConversationPatch, clearSelection]);
+
+  const bulkResolve = useCallback(async () => {
+    await applyBulkPatch({
+      status: "resolved",
+      ...slaPatchOnResolved(),
+    });
+  }, [applyBulkPatch]);
+
+  const bulkAddTag = useCallback(
+    async (tagId: string) => {
+      if (!accountId || selectedIds.length === 0) return;
+      setBulkBusy(true);
+      const supabase = createClient();
+      const contactIds = conversations
+        .filter((c) => selectedIds.includes(c.id) && c.contact_id)
+        .map((c) => c.contact_id);
+      const unique = [...new Set(contactIds)];
+      const rows = unique.map((contact_id) => ({
+        contact_id,
+        tag_id: tagId,
+      }));
+      const { error } = await supabase.from("contact_tags").upsert(rows, {
+        onConflict: "contact_id,tag_id",
+        ignoreDuplicates: true,
+      });
+      setBulkBusy(false);
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+      toast.success(t("bulkTagged", { count: unique.length }));
+      clearSelection();
+    },
+    [accountId, selectedIds, conversations, clearSelection, t],
+  );
+
+  const bulkExportCsv = useCallback(() => {
+    const rows = conversations.filter((c) => selectedIds.includes(c.id));
+    const header = [
+      "id",
+      "status",
+      "contact_name",
+      "phone",
+      "unread",
+      "last_message_at",
+      "assigned_agent_id",
+    ];
+    const lines = [
+      header.join(","),
+      ...rows.map((c) =>
+        [
+          c.id,
+          c.status,
+          JSON.stringify(c.contact?.name ?? ""),
+          JSON.stringify(c.contact?.phone ?? ""),
+          c.unread_count ?? 0,
+          c.last_message_at ?? "",
+          c.assigned_agent_id ?? "",
+        ].join(","),
+      ),
+    ];
+    const blob = new Blob([lines.join("\n")], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `inbox-export-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [conversations, selectedIds]);
+
+  // Keyboard: Ctrl/Cmd+K search, Esc close, j/k or arrows list nav
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      if (e.key === "Escape") {
+        if (selectedIds.length > 0) {
+          clearSelection();
+          return;
+        }
+        if (!typing) onCloseActive?.();
+        return;
+      }
+
+      if (typing) return;
+
+      if (e.key === "j" || e.key === "ArrowDown" || e.key === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (filtered.length === 0) return;
+        const idx = filtered.findIndex((c) => c.id === activeConversationId);
+        const next =
+          e.key === "j" || e.key === "ArrowDown"
+            ? Math.min(filtered.length - 1, Math.max(0, idx) + (idx < 0 ? 0 : 1))
+            : Math.max(0, (idx < 0 ? 0 : idx) - 1);
+        onSelect(filtered[next]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    filtered,
+    activeConversationId,
+    onSelect,
+    onCloseActive,
+    selectedIds.length,
+    clearSelection,
   ]);
 
   const toggleTag = useCallback((id: string) => {
@@ -303,10 +549,56 @@ export function ConversationList({
 
   return (
     <div className="flex h-full w-full flex-col border-r border-border bg-card lg:w-80">
+      {/* Analytics strip */}
+      <div className="grid grid-cols-4 gap-1 border-b border-border px-2 py-1.5 text-[10px] tabular-nums text-muted-foreground">
+        <div title={t("analyticsOpen")}>
+          <span className="block font-semibold text-foreground">{analytics.open}</span>
+          {t("analyticsOpenShort")}
+        </div>
+        <div title={t("analyticsUnread")}>
+          <span className="block font-semibold text-foreground">{analytics.unread}</span>
+          {t("analyticsUnreadShort")}
+        </div>
+        <div title={t("analyticsPending")}>
+          <span className="block font-semibold text-foreground">{analytics.pending}</span>
+          {t("analyticsPendingShort")}
+        </div>
+        <div title={t("analyticsSla")}>
+          <span
+            className={cn(
+              "block font-semibold",
+              analytics.slaMissed > 0 ? "text-red-500" : "text-foreground",
+            )}
+          >
+            {analytics.slaMissed}
+          </span>
+          {t("analyticsSlaShort")}
+        </div>
+        <div title={t("analyticsResolvedToday")} className="col-span-1">
+          <span className="block font-semibold text-foreground">
+            {analytics.resolvedToday}
+          </span>
+          {t("analyticsResolvedShort")}
+        </div>
+        <div title={t("analyticsAvgResponse")} className="col-span-2">
+          <span className="block font-semibold text-foreground">
+            {analytics.avgFirstResponseMinutes != null
+              ? `${analytics.avgFirstResponseMinutes}m`
+              : "—"}
+          </span>
+          {t("analyticsAvgShort")}
+        </div>
+        <div title={t("analyticsAi")}>
+          <span className="block font-semibold text-foreground">{analytics.aiActive}</span>
+          {t("analyticsAiShort")}
+        </div>
+      </div>
+
       <div className="space-y-2 border-b border-border p-3">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
+            ref={searchInputRef}
             value={search}
             onChange={handleSearchChange}
             placeholder={t("searchPlaceholder")}
@@ -314,6 +606,78 @@ export function ConversationList({
             className="border-border bg-muted pl-9 text-sm text-foreground placeholder-muted-foreground focus:border-primary/50"
           />
         </div>
+
+        {selectedIds.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/50 p-1.5">
+            <span className="px-1 text-[11px] font-medium text-foreground">
+              {t("bulkSelected", { count: selectedIds.length })}
+            </span>
+            <button
+              type="button"
+              disabled={bulkBusy}
+              onClick={bulkAssignMe}
+              className="rounded px-1.5 py-0.5 text-[11px] text-primary hover:bg-muted"
+            >
+              {t("bulkAssignMe")}
+            </button>
+            <button
+              type="button"
+              disabled={bulkBusy}
+              onClick={bulkUnassign}
+              className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              {t("bulkUnassign")}
+            </button>
+            <button
+              type="button"
+              disabled={bulkBusy}
+              onClick={bulkResolve}
+              className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              {t("bulkResolve")}
+            </button>
+            {tags.length > 0 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground">
+                  {t("bulkTag")}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="border-border bg-popover">
+                  {tags.map((tag) => (
+                    <DropdownMenuItem
+                      key={tag.id}
+                      onClick={() => void bulkAddTag(tag.id)}
+                      className="text-sm"
+                    >
+                      {tag.name}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+            <button
+              type="button"
+              onClick={bulkExportCsv}
+              className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <Download className="h-3 w-3" />
+              {t("bulkExport")}
+            </button>
+            <button
+              type="button"
+              onClick={selectAllFiltered}
+              className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              {t("bulkSelectAll")}
+            </button>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              {t("bulkClear")}
+            </button>
+          </div>
+        )}
 
         <div className="flex flex-wrap items-center gap-1">
           <DropdownMenu>
@@ -341,6 +705,7 @@ export function ConversationList({
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+
 
           {tags.length > 0 && (
             <DropdownMenu>
@@ -496,6 +861,8 @@ export function ConversationList({
                 key={conv.id}
                 conversation={conv}
                 isActive={conv.id === activeConversationId}
+                isSelected={selectedIds.includes(conv.id)}
+                onToggleSelect={toggleSelected}
                 onSelect={handleSelect}
                 t={t}
               />
@@ -510,6 +877,8 @@ export function ConversationList({
 interface ConversationItemProps {
   conversation: Conversation;
   isActive: boolean;
+  isSelected: boolean;
+  onToggleSelect: (id: string) => void;
   onSelect: (conversation: Conversation) => void;
   t: ReturnType<typeof useTranslations>;
 }
@@ -517,6 +886,8 @@ interface ConversationItemProps {
 function ConversationItem({
   conversation,
   isActive,
+  isSelected,
+  onToggleSelect,
   onSelect,
   t,
 }: ConversationItemProps) {
@@ -529,25 +900,48 @@ function ConversationItem({
     onSelect(conversation);
   }, [onSelect, conversation]);
 
+  const handleToggle = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onToggleSelect(conversation.id);
+    },
+    [onToggleSelect, conversation.id],
+  );
+
   const timeLabel = formatInboxListTime(conversation.last_message_at);
 
   return (
-    <button
-      type="button"
+    <div
       role="listitem"
-      onClick={handleClick}
-      aria-current={isActive ? "true" : undefined}
-      aria-label={
-        unread > 0
-          ? `${displayName}, ${unread} unread`
-          : displayName
-      }
       className={cn(
-        "flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-muted/50",
+        "flex w-full items-start gap-2 px-2 py-3 text-left transition-colors hover:bg-muted/50",
         isActive && "border-l-2 border-primary bg-muted/70",
         unread > 0 && !isActive && "bg-primary/[0.03]",
       )}
     >
+      <button
+        type="button"
+        onClick={handleToggle}
+        aria-label={isSelected ? t("bulkDeselectRow") : t("bulkSelectRow")}
+        className="mt-2 shrink-0 text-muted-foreground hover:text-foreground"
+      >
+        {isSelected ? (
+          <CheckSquare className="h-4 w-4 text-primary" />
+        ) : (
+          <Square className="h-4 w-4" />
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={handleClick}
+        aria-current={isActive ? "true" : undefined}
+        aria-label={
+          unread > 0
+            ? `${displayName}, ${unread} unread`
+            : displayName
+        }
+        className="flex min-w-0 flex-1 items-start gap-3 text-left"
+      >
       <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-medium text-foreground">
         {contact?.avatar_url ? (
           <img
@@ -561,6 +955,11 @@ function ConversationItem({
         {conversation.is_pinned && (
           <span className="absolute -right-0.5 -top-0.5 rounded-full bg-card p-0.5 text-muted-foreground">
             <Pin className="h-2.5 w-2.5" aria-hidden />
+          </span>
+        )}
+        {conversation.is_starred && !conversation.is_pinned && (
+          <span className="absolute -right-0.5 -top-0.5 rounded-full bg-card p-0.5 text-amber-500">
+            <Star className="h-2.5 w-2.5 fill-current" aria-hidden />
           </span>
         )}
       </div>
@@ -603,6 +1002,7 @@ function ConversationItem({
           </div>
         </div>
       </div>
-    </button>
+      </button>
+    </div>
   );
 }

@@ -13,6 +13,10 @@ import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
 } from '@/lib/whatsapp/template-webhook'
+import {
+  DEFAULT_INBOX_SETTINGS,
+  slaPatchOnCustomerMessage,
+} from '@/lib/inbox/sla'
 
 // The `after()` callback in POST runs within this route's max duration.
 // Inbound processing can fan out to per-media Meta verification calls, so
@@ -894,6 +898,23 @@ async function processMessage(
   const customerMessageAt = new Date(
     parseInt(message.timestamp) * 1000,
   ).toISOString()
+
+  // SLA clocks (migration 040) — best-effort; settings may be missing.
+  let slaPatch: Record<string, unknown> = {}
+  try {
+    const { data: settingsRow } = await supabaseAdmin()
+      .from('inbox_settings')
+      .select(
+        'first_response_minutes, next_response_minutes, resolution_minutes',
+      )
+      .eq('account_id', accountId)
+      .maybeSingle()
+    const settings = settingsRow ?? DEFAULT_INBOX_SETTINGS
+    slaPatch = slaPatchOnCustomerMessage(conversation, settings, new Date(customerMessageAt))
+  } catch (err) {
+    webhookDebug('SLA patch skipped', err)
+  }
+
   webhookDebug('Conversation update', { conversationId: conversation.id })
   let { error: convError } = await supabaseAdmin()
     .from('conversations')
@@ -903,6 +924,7 @@ async function processMessage(
       last_customer_message_at: customerMessageAt,
       unread_count: (conversation.unread_count || 0) + 1,
       updated_at: new Date().toISOString(),
+      ...slaPatch,
     })
     .eq('id', conversation.id)
 
@@ -918,6 +940,27 @@ async function processMessage(
       .update({
         last_message_text: contentText || `[${message.type}]`,
         last_message_at: customerMessageAt,
+        unread_count: (conversation.unread_count || 0) + 1,
+        updated_at: new Date().toISOString(),
+        ...slaPatch,
+      })
+      .eq('id', conversation.id))
+  }
+
+  // Migration 040 SLA columns may be missing — drop SLA fields and retry.
+  if (
+    convError &&
+    /first_response_due_at|next_response_due_at|resolution_due_at/i.test(
+      convError.message ?? '',
+    )
+  ) {
+    webhookDebug('Conversation update retry without SLA columns')
+    ;({ error: convError } = await supabaseAdmin()
+      .from('conversations')
+      .update({
+        last_message_text: contentText || `[${message.type}]`,
+        last_message_at: customerMessageAt,
+        last_customer_message_at: customerMessageAt,
         unread_count: (conversation.unread_count || 0) + 1,
         updated_at: new Date().toISOString(),
       })

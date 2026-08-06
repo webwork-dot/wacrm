@@ -20,12 +20,15 @@ import type {
 import {
   MessageSquare,
   ChevronDown,
-  UserPlus,
   Check,
   ArrowLeft,
   RefreshCw,
   PanelRightOpen,
   PanelRightClose,
+  Pin,
+  Star,
+  Clock,
+  User,
 } from "lucide-react";
 import { format, isToday, isYesterday } from "date-fns";
 import { useTranslations } from "next-intl";
@@ -34,6 +37,15 @@ import {
   getCustomerServiceWindow,
   formatInboxDayLabel,
 } from "@/lib/inbox/format-time";
+import { snoozeUntil } from "@/lib/inbox/conversations";
+import { logConversationEvent } from "@/lib/inbox/events";
+import {
+  formatSlaCountdown,
+  getSlaSnapshot,
+  slaPatchOnAgentReply,
+  slaPatchOnResolved,
+} from "@/lib/inbox/sla";
+import { useConversationPresence } from "@/hooks/use-conversation-presence";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -79,6 +91,11 @@ interface MessageThreadProps {
   onAssignChange: (
     conversationId: string,
     assignedAgentId: string | null,
+  ) => void;
+  /** Patch arbitrary conversation fields after a local write (pin/star/snooze/ownership). */
+  onConversationPatch?: (
+    conversationId: string,
+    patch: Partial<Conversation>,
   ) => void;
   /**
    * On mobile, the thread is shown full-screen with the conversation list
@@ -140,8 +157,10 @@ function groupMessagesByDate(messages: Message[]) {
 
 const STATUS_OPTIONS: { label: string; value: ConversationStatus; color: string }[] = [
   { label: "Open", value: "open", color: "text-primary" },
-  { label: "Pending", value: "pending", color: "text-amber-400" },
+  { label: "Pending", value: "pending", color: "text-amber-500" },
+  { label: "Resolved", value: "resolved", color: "text-emerald-600" },
   { label: "Closed", value: "closed", color: "text-muted-foreground" },
+  { label: "Spam", value: "spam", color: "text-red-500" },
 ];
 
 /**
@@ -165,6 +184,7 @@ export function MessageThread({
   onUpdateMessage,
   onStatusChange,
   onAssignChange,
+  onConversationPatch,
   onBack,
   resyncToken = 0,
   onRefresh,
@@ -175,8 +195,28 @@ export function MessageThread({
   const tTimer = useTranslations("Inbox.sessionTimer");
   const tQuote = useTranslations("Inbox.replyQuote");
 
-  const { user } = useAuth();
+  const { user, profile, accountId } = useAuth();
   const { getPresence, getRow, now } = usePresence();
+  const typingWarnedRef = useRef<string | null>(null);
+
+  const { primaryPeer, setTyping } = useConversationPresence({
+    conversationId: conversation?.id,
+    userId: user?.id,
+    fullName: profile?.full_name || profile?.email || "Agent",
+    enabled: !!conversation?.id,
+  });
+
+  // Soft warning once when another agent starts typing on this thread.
+  useEffect(() => {
+    if (!primaryPeer || primaryPeer.state !== "typing") return;
+    if (typingWarnedRef.current === primaryPeer.userId) return;
+    typingWarnedRef.current = primaryPeer.userId;
+    toast.message(t("peerReplying", { name: primaryPeer.fullName }));
+  }, [primaryPeer, t]);
+
+  useEffect(() => {
+    typingWarnedRef.current = null;
+  }, [conversation?.id]);
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
@@ -440,6 +480,30 @@ export function MessageThread({
     }
   }, [messages]);
 
+  const markLastReplied = useCallback(
+    async (opts?: { eventType?: "replied" | "template_sent"; templateName?: string }) => {
+      if (!conversation || !user?.id || !accountId) return;
+      const slaPatch = slaPatchOnAgentReply(conversation);
+      const patch = { last_replied_by: user.id, ...slaPatch };
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("conversations")
+        .update(patch)
+        .eq("id", conversation.id);
+      if (!error) {
+        onConversationPatch?.(conversation.id, patch);
+      }
+      void logConversationEvent({
+        accountId,
+        conversationId: conversation.id,
+        contactId: conversation.contact_id,
+        eventType: opts?.eventType ?? "replied",
+        payload: opts?.templateName ? { name: opts.templateName } : {},
+      });
+    },
+    [conversation, user?.id, accountId, onConversationPatch],
+  );
+
   const handleSend = useCallback(
     async (text: string, replyToId?: string) => {
       if (!conversation) return;
@@ -487,6 +551,7 @@ export function MessageThread({
         // with the real DB row. If realtime hasn't arrived yet, at least
         // flip status to 'sent' so the UI stops showing "sending".
         onUpdateMessage(tempId, { status: "sent" });
+        void markLastReplied();
       } catch (err) {
         console.error("Failed to send message:", err);
         const reason = err instanceof Error ? err.message : "network error";
@@ -494,7 +559,7 @@ export function MessageThread({
         onUpdateMessage(tempId, { status: "failed" });
       }
     },
-    [conversation, onNewMessage, onUpdateMessage]
+    [conversation, onNewMessage, onUpdateMessage, markLastReplied]
   );
 
   const handleSendMedia = useCallback(
@@ -552,6 +617,7 @@ export function MessageThread({
         }
 
         onUpdateMessage(tempId, { status: "sent" });
+        void markLastReplied();
       } catch (err) {
         console.error("Failed to send media:", err);
         const reason = err instanceof Error ? err.message : "network error";
@@ -560,7 +626,7 @@ export function MessageThread({
         void deleteAccountMedia(CHAT_MEDIA_BUCKET, payload.path).catch(() => {});
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [conversation, onNewMessage, onUpdateMessage, markLastReplied],
   );
 
   const handleSendInteractive = useCallback(
@@ -606,6 +672,7 @@ export function MessageThread({
         }
 
         onUpdateMessage(tempId, { status: "sent" });
+        void markLastReplied();
       } catch (err) {
         console.error("Failed to send interactive message:", err);
         const reason = err instanceof Error ? err.message : "network error";
@@ -613,22 +680,39 @@ export function MessageThread({
         onUpdateMessage(tempId, { status: "failed" });
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [conversation, onNewMessage, onUpdateMessage, markLastReplied],
   );
 
   const handleStatusChange = useCallback(
     async (status: ConversationStatus) => {
-      if (!conversation) return;
+      if (!conversation || !accountId) return;
+
+      const resolvedPatch =
+        status === "resolved" || status === "closed"
+          ? slaPatchOnResolved()
+          : {};
+      const patch = { status, ...resolvedPatch };
 
       const supabase = createClient();
       await supabase
         .from("conversations")
-        .update({ status })
+        .update(patch)
         .eq("id", conversation.id);
 
       onStatusChange(conversation.id, status);
+      onConversationPatch?.(conversation.id, patch);
+      void logConversationEvent({
+        accountId,
+        conversationId: conversation.id,
+        contactId: conversation.contact_id,
+        eventType:
+          status === "resolved" || status === "closed"
+            ? "resolved"
+            : "status_changed",
+        payload: { status, from: conversation.status },
+      });
     },
-    [conversation, onStatusChange]
+    [conversation, accountId, onStatusChange, onConversationPatch],
   );
 
   const handleOpenTemplates = useCallback(() => {
@@ -695,6 +779,10 @@ export function MessageThread({
         }
 
         onUpdateMessage(tempId, { status: "sent" });
+        void markLastReplied({
+          eventType: "template_sent",
+          templateName: template.name,
+        });
       } catch (err) {
         console.error("Failed to send template:", err);
         const reason = err instanceof Error ? err.message : "network error";
@@ -702,7 +790,7 @@ export function MessageThread({
         onUpdateMessage(tempId, { status: "failed" });
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [conversation, onNewMessage, onUpdateMessage, markLastReplied],
   );
 
   // Build a quick id → Message map so reply quotes can be rendered without
@@ -814,23 +902,118 @@ export function MessageThread({
 
   const handleAssignChange = useCallback(
     async (agentId: string | null) => {
-      if (!conversation) return;
+      if (!conversation || !user?.id || !accountId) return;
+
+      const nowIso = new Date().toISOString();
+      const patch = {
+        assigned_agent_id: agentId,
+        assigned_by: agentId ? user.id : null,
+        assigned_at: agentId ? nowIso : null,
+      };
 
       const supabase = createClient();
       const { error } = await supabase
         .from("conversations")
-        .update({ assigned_agent_id: agentId })
+        .update(patch)
         .eq("id", conversation.id);
 
       if (error) {
         console.error("Failed to update assignment:", error);
-        toast.error("Failed to update assignment");
+        toast.error(t("assignError"));
         return;
       }
 
       onAssignChange(conversation.id, agentId);
+      onConversationPatch?.(conversation.id, {
+        assigned_agent_id: agentId ?? undefined,
+        assigned_by: patch.assigned_by,
+        assigned_at: patch.assigned_at,
+      });
+
+      const toName = profiles.find((a) => a.user_id === agentId)?.full_name;
+      void logConversationEvent({
+        accountId,
+        conversationId: conversation.id,
+        contactId: conversation.contact_id,
+        eventType: agentId ? "assigned" : "unassigned",
+        payload: { to: agentId, to_name: toName ?? null },
+      });
     },
-    [conversation, onAssignChange],
+    [
+      conversation,
+      onAssignChange,
+      onConversationPatch,
+      user?.id,
+      accountId,
+      profiles,
+      t,
+    ],
+  );
+
+  const patchConversationField = useCallback(
+    async (
+      patch: Partial<Conversation>,
+      eventType?: string,
+      payload?: Record<string, unknown>,
+    ) => {
+      if (!conversation || !accountId) return;
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("conversations")
+        .update(patch)
+        .eq("id", conversation.id);
+      if (error) {
+        console.error("Failed to update conversation:", error);
+        toast.error(t("updateError"));
+        return;
+      }
+      onConversationPatch?.(conversation.id, patch);
+      if (eventType) {
+        void logConversationEvent({
+          accountId,
+          conversationId: conversation.id,
+          contactId: conversation.contact_id,
+          eventType,
+          payload,
+        });
+      }
+    },
+    [conversation, accountId, onConversationPatch, t],
+  );
+
+  const handleTogglePin = useCallback(() => {
+    if (!conversation) return;
+    const next = !conversation.is_pinned;
+    void patchConversationField(
+      { is_pinned: next },
+      next ? "pinned" : "unpinned",
+    );
+  }, [conversation, patchConversationField]);
+
+  const handleToggleStar = useCallback(() => {
+    if (!conversation) return;
+    const next = !conversation.is_starred;
+    void patchConversationField(
+      { is_starred: next },
+      next ? "starred" : "unstarred",
+    );
+  }, [conversation, patchConversationField]);
+
+  const handleSnooze = useCallback(
+    (preset: "30m" | "1h" | "tomorrow" | "next_monday" | "clear") => {
+      if (!conversation) return;
+      if (preset === "clear") {
+        void patchConversationField({ snoozed_until: null }, "unsnoozed");
+        return;
+      }
+      const until = snoozeUntil(preset).toISOString();
+      void patchConversationField(
+        { snoozed_until: until },
+        "snoozed",
+        { until, preset },
+      );
+    },
+    [conversation, patchConversationField],
   );
 
   // Empty state — same WhatsApp-style doodle background as the active
@@ -860,8 +1043,15 @@ export function MessageThread({
   const assignedAgentId = conversation.assigned_agent_id ?? null;
   const currentAssignee = profiles.find((p) => p.user_id === assignedAgentId);
   const assignLabel = assignedAgentId
-    ? (currentAssignee?.full_name ?? t("assigned"))
-    : t("assign");
+    ? t("assignedTo", {
+        name: currentAssignee?.full_name ?? t("assigned"),
+      })
+    : t("unassigned");
+
+  const slaSnap = getSlaSnapshot(conversation, new Date(nowTick));
+  const slaDue =
+    slaSnap.firstDueAt ?? slaSnap.nextDueAt ?? slaSnap.resolutionDueAt;
+  const slaCountdown = formatSlaCountdown(slaDue, new Date(nowTick));
 
   return (
     // `min-w-0` is load-bearing: the page already puts min-w-0 on the
@@ -920,6 +1110,20 @@ export function MessageThread({
               </span>
             )}
           </Badge>
+          {slaCountdown && (
+            <Badge
+              variant="outline"
+              className={cn(
+                "ml-1 hidden gap-1 border-border text-[10px] sm:inline-flex",
+                slaSnap.anyOverdue
+                  ? "border-red-500/40 text-red-500"
+                  : "text-muted-foreground",
+              )}
+              title={t("slaLabel")}
+            >
+              {t("slaShort")}: {slaCountdown}
+            </Badge>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -972,6 +1176,68 @@ export function MessageThread({
             </button>
           )}
 
+          {/* Pin / Star / Snooze */}
+          <button
+            type="button"
+            onClick={handleTogglePin}
+            aria-label={conversation.is_pinned ? t("unpin") : t("pin")}
+            title={conversation.is_pinned ? t("unpin") : t("pin")}
+            aria-pressed={!!conversation.is_pinned}
+            className={cn(
+              "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted",
+              conversation.is_pinned ? "text-primary" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Pin className={cn("h-3.5 w-3.5", conversation.is_pinned && "fill-current")} />
+          </button>
+          <button
+            type="button"
+            onClick={handleToggleStar}
+            aria-label={conversation.is_starred ? t("unstar") : t("star")}
+            title={conversation.is_starred ? t("unstar") : t("star")}
+            aria-pressed={!!conversation.is_starred}
+            className={cn(
+              "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted",
+              conversation.is_starred ? "text-amber-500" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Star className={cn("h-3.5 w-3.5", conversation.is_starred && "fill-current")} />
+          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              className={cn(
+                "inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground",
+                conversation.snoozed_until && "text-primary",
+              )}
+              aria-label={t("snooze")}
+              title={t("snooze")}
+            >
+              <Clock className="h-3.5 w-3.5" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="border-border bg-popover">
+              <DropdownMenuItem onClick={() => handleSnooze("30m")} className="text-sm">
+                {t("snooze30m")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleSnooze("1h")} className="text-sm">
+                {t("snooze1h")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleSnooze("tomorrow")} className="text-sm">
+                {t("snoozeTomorrow")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleSnooze("next_monday")} className="text-sm">
+                {t("snoozeNextMonday")}
+              </DropdownMenuItem>
+              {conversation.snoozed_until && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => handleSnooze("clear")} className="text-sm">
+                    {t("snoozeClear")}
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
           {/* Status dropdown */}
           <DropdownMenu>
             <DropdownMenuTrigger className={cn(
@@ -1001,13 +1267,14 @@ export function MessageThread({
           <DropdownMenu>
             <DropdownMenuTrigger
               className={cn(
-                "inline-flex items-center justify-center h-7 gap-1 px-2 text-xs rounded-md hover:bg-muted",
+                "inline-flex max-w-[10rem] items-center justify-center h-7 gap-1 px-2 text-xs rounded-md hover:bg-muted",
                 assignedAgentId ? "text-primary" : "text-muted-foreground"
               )}
+              aria-label={assignLabel}
             >
-              <UserPlus className="h-3 w-3" />
-              <span className="hidden sm:inline">{assignLabel}</span>
-              <ChevronDown className="h-3 w-3" />
+              <User className="h-3 w-3 shrink-0" />
+              <span className="hidden truncate sm:inline">{assignLabel}</span>
+              <ChevronDown className="h-3 w-3 shrink-0" />
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
@@ -1063,6 +1330,18 @@ export function MessageThread({
           </DropdownMenu>
         </div>
       </div>
+
+      {/* Collision detection — other agents viewing / typing */}
+      {primaryPeer && (
+        <div
+          role="status"
+          className="border-b border-amber-500/20 bg-amber-500/5 px-3 py-1.5 text-xs text-amber-800 dark:text-amber-200 sm:px-4"
+        >
+          {primaryPeer.state === "typing"
+            ? t("peerReplyingBanner", { name: primaryPeer.fullName })
+            : t("peerViewingBanner", { name: primaryPeer.fullName })}
+        </div>
+      )}
 
       {/* Messages Area */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
@@ -1212,6 +1491,7 @@ export function MessageThread({
         onOpenTemplates={handleOpenTemplates}
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}
+        onTypingChange={setTyping}
       />
 
       <TemplatePicker
