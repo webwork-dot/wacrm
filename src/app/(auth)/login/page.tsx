@@ -68,9 +68,17 @@ function LoginPageInner() {
     // back to /login — which looks like the page "just refreshing"
     // instead of signing in (issue #365). Mirrors the deliberate full
     // reload the invite-accept flow already uses in join/[token].
-    const destination = inviteToken
+    let destination = inviteToken
       ? `/join/${encodeURIComponent(inviteToken)}`
       : "/dashboard";
+    if (!inviteToken) {
+      try {
+        const ctx = await fetch("/api/session/context").then((r) => r.json());
+        if (ctx.surface === "platform") destination = "/console";
+      } catch {
+        /* fall through to dashboard */
+      }
+    }
     window.location.href = destination;
   };
 

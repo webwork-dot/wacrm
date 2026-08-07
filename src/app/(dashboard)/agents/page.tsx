@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { Bot, Sparkles, Settings2, BarChart3, BookOpen } from 'lucide-react';
+import { Sparkles, Settings2, BarChart3, BookOpen } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { AiPlayground } from '@/components/agents/ai-playground';
 import { AiUsageCard } from '@/components/agents/ai-usage';
@@ -10,6 +10,9 @@ import { AiConfig } from '@/components/settings/ai-config';
 import { AiKnowledgeCard } from '@/components/settings/ai-knowledge';
 import { useAuth } from '@/hooks/use-auth';
 import { canEditSettings } from '@/lib/auth/roles';
+import { FeatureGate } from '@/components/ux/feature-gate';
+import { PageHeader } from '@/components/ux/page-header';
+import { EmptyGuide } from '@/components/ux/empty-guide';
 
 type Tab = 'sandbox' | 'studio' | 'knowledge' | 'usage';
 
@@ -36,6 +39,7 @@ function AgentsPageInner() {
   const canEdit = accountRole ? canEditSettings(accountRole) : false;
   const [tab, setTab] = useState<Tab>('sandbox');
   const [decided, setDecided] = useState(false);
+  const [configured, setConfigured] = useState(false);
   const [hasEmbeddingsKey, setHasEmbeddingsKey] = useState(false);
 
   useEffect(() => {
@@ -46,6 +50,7 @@ function AgentsPageInner() {
         const data = await res.json().catch(() => ({}));
         if (cancelled) return;
         setHasEmbeddingsKey(Boolean(data?.has_embeddings_key));
+        setConfigured(Boolean(data?.configured));
         setTab(
           normalizeTab(searchParams.get('tab'), Boolean(data?.configured)),
         );
@@ -63,19 +68,38 @@ function AgentsPageInner() {
   }, [searchParams]);
 
   return (
-    <div>
-      <div className="flex items-center gap-2">
-        <Bot className="h-6 w-6 text-primary" />
-        <h1 className="text-2xl font-bold tracking-tight text-foreground">
-          AI Studio
-        </h1>
-      </div>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Wizard-built prompts, Knowledge Hub grounding, and a sandbox that
-        mirrors live auto-reply — with your own LLM keys.
-      </p>
+    <FeatureGate
+      featureFlag="ai_studio"
+      planEntitlement="ai_studio"
+      title="AI Studio is not on your plan"
+      description="Upgrade or ask your workspace admin to enable AI Studio."
+    >
+      <div>
+        <PageHeader
+          title="AI Studio"
+          description="Connect your AI provider, ground answers in Knowledge Hub, then test in the sandbox."
+          nextStep={
+            !configured
+              ? 'Connect an AI provider'
+              : 'Add knowledge and try the sandbox'
+          }
+        />
 
-      {decided && (
+        {decided && !configured ? (
+          <div className="mb-4">
+            <EmptyGuide
+              title="Connect AI to get started"
+              description="Bring your own API keys. Convexa never sells AI credits — you control the provider."
+              steps={[
+                { label: 'Open Studio setup', href: '/agents?tab=studio' },
+                { label: 'Add Knowledge', href: '/agents?tab=knowledge' },
+                { label: 'Test in Sandbox', href: '/agents?tab=sandbox' },
+              ]}
+            />
+          </div>
+        ) : null}
+
+        {decided && (
         <Tabs
           value={tab}
           onValueChange={(v) => setTab(v as Tab)}
@@ -122,5 +146,6 @@ function AgentsPageInner() {
         </Tabs>
       )}
     </div>
+    </FeatureGate>
   );
 }

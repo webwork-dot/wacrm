@@ -33,6 +33,9 @@ import { ConversationsChart } from '@/components/dashboard/conversations-chart'
 import { PipelineDonut } from '@/components/dashboard/pipeline-donut'
 import { ResponseTimeChart } from '@/components/dashboard/response-time-chart'
 import { ActivityFeed } from '@/components/dashboard/activity-feed'
+import { OnboardingChecklistCard } from '@/components/ux/feature-gate'
+import { PageHeader } from '@/components/ux/page-header'
+import { useSession } from '@/hooks/use-session'
 
 import { useTranslations } from 'next-intl'
 
@@ -41,6 +44,7 @@ type RangeDays = 7 | 30 | 90
 export default function DashboardPage() {
   const t = useTranslations('Dashboard.page')
   const { defaultCurrency, accountId } = useAuth()
+  const { onboarding, health } = useSession()
   const [metrics, setMetrics] = useState<MetricsBundle | null>(null)
   const [metricsLoading, setMetricsLoading] = useState(true)
 
@@ -125,15 +129,19 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-5">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">{t('title')}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {t('description')}
-        </p>
-      </div>
+      <PageHeader
+        title={t('title')}
+        description={t('description')}
+        nextStep={
+          onboarding && !onboarding.complete
+            ? onboarding.steps.find((s) => !s.done)?.title
+            : health?.reasons?.[0]
+        }
+      />
 
-      {/* Metric cards */}
+      <OnboardingChecklistCard />
+
+      {/* Metric cards — business health only */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {metricsLoading || !metrics ? (
           Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)

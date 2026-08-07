@@ -876,10 +876,19 @@ export function ConversationList({
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
           </div>
         ) : filtered.length === 0 ? (
-          <div className="px-4 py-12 text-center">
-            <p className="text-sm text-muted-foreground">
+          <div className="px-4 py-8 text-center">
+            <p className="text-sm font-medium text-foreground">
               {t("noConversations")}
             </p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Next: Connect WhatsApp, then send a test message to open your first chat.
+            </p>
+            <a
+              href="/settings?tab=whatsapp"
+              className="mt-3 inline-block text-xs font-medium text-primary underline-offset-4 hover:underline"
+            >
+              Connect WhatsApp
+            </a>
           </div>
         ) : (
           <div className="flex flex-col" role="list">

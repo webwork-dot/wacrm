@@ -3,30 +3,53 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
+import { SessionProvider, useSession } from "@/hooks/use-session";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
 import { PresenceHeartbeat } from "@/components/presence/presence-heartbeat";
-
-// Auth-gated dashboard shell. Extracted from the layout so the layout
-// itself can stay a server component and export metadata (noindex) —
-// client components can't export Next's metadata object.
+import {
+  WorkspaceChrome,
+  AccountSwitcher,
+} from "@/components/platform/platform-shell";
+import { installCommandHook } from "@/lib/nav/commands";
 
 function DashboardShellInner({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
+  const { user, loading: authLoading } = useAuth();
+  const {
+    loading: sessionLoading,
+    surface,
+    platformUser,
+    impersonation,
+  } = useSession();
   const router = useRouter();
 
-  // Sidebar drawer state — only used on mobile. On lg+ the sidebar is
-  // always visible and this stays at `false` (ignored by the component).
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
   useEffect(() => {
-    if (!loading && !user) {
+    if (!authLoading && !user) {
       router.push("/login");
     }
-  }, [user, loading, router]);
+  }, [user, authLoading, router]);
 
-  if (loading) {
+  // Platform operators land in console unless View As Client is active.
+  useEffect(() => {
+    if (sessionLoading || authLoading) return;
+    if (platformUser && surface === "platform" && !impersonation) {
+      router.replace("/console");
+    }
+  }, [
+    sessionLoading,
+    authLoading,
+    platformUser,
+    surface,
+    impersonation,
+    router,
+  ]);
+
+  useEffect(() => installCommandHook(), []);
+
+  if (authLoading || sessionLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-3">
@@ -39,16 +62,25 @@ function DashboardShellInner({ children }: { children: React.ReactNode }) {
 
   if (!user) return null;
 
+  if (platformUser && surface === "platform" && !impersonation) {
+    return null;
+  }
+
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      {/* Reports this tab's online/away presence once we know a user is
-          signed in. Headless — renders nothing. */}
-      <PresenceHeartbeat />
-      <Sidebar open={sidebarOpen} onClose={closeSidebar} />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <Header onOpenSidebar={() => setSidebarOpen(true)} />
-        {/* Thinner horizontal padding on mobile so cards have room to breathe. */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6">{children}</main>
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
+      <WorkspaceChrome />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <PresenceHeartbeat />
+        <Sidebar open={sidebarOpen} onClose={closeSidebar} />
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <Header onOpenSidebar={() => setSidebarOpen(true)} />
+          {platformUser && !impersonation ? (
+            <div className="flex items-center justify-end gap-2 border-b border-border px-4 py-1">
+              <AccountSwitcher />
+            </div>
+          ) : null}
+          <main className="flex-1 overflow-y-auto p-4 sm:p-6">{children}</main>
+        </div>
       </div>
     </div>
   );
@@ -57,7 +89,9 @@ function DashboardShellInner({ children }: { children: React.ReactNode }) {
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   return (
     <AuthProvider>
-      <DashboardShellInner>{children}</DashboardShellInner>
+      <SessionProvider>
+        <DashboardShellInner>{children}</DashboardShellInner>
+      </SessionProvider>
     </AuthProvider>
   );
 }

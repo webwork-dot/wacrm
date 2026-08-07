@@ -15,7 +15,20 @@ export async function GET() {
       const r = row as { key: string; value: unknown };
       settings[r.key] = r.value;
     }
-    return NextResponse.json({ settings });
+
+    let feature_flags: Array<Record<string, unknown>> = [];
+    try {
+      const { data: flags } = await admin
+        .from("feature_flags")
+        .select("id, key, enabled, account_id")
+        .order("key")
+        .limit(200);
+      feature_flags = flags ?? [];
+    } catch {
+      /* pre-045 */
+    }
+
+    return NextResponse.json({ settings, feature_flags });
   } catch (err) {
     return toErrorResponse(err);
   }

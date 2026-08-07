@@ -20,7 +20,7 @@ import {
 
 import { useTranslations } from "next-intl";
 import { useCan } from "@/hooks/use-can";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { GatedButton } from "@/components/ui/gated-button";
 import {
   Dialog,
@@ -33,6 +33,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { FeatureGate } from "@/components/ux/feature-gate";
+import { EmptyGuide } from "@/components/ux/empty-guide";
+import Link from "next/link";
 
 /**
  * Flows list page.
@@ -200,6 +203,12 @@ export default function FlowsPage() {
   }
 
   return (
+    <FeatureGate
+      featureFlag="automations"
+      planEntitlement="flows"
+      title="Automation Studio is not on your plan"
+      description="Ask your admin to enable automations, or start from a Starter Kit once available."
+    >
     <div className="space-y-6 p-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
@@ -211,6 +220,9 @@ export default function FlowsPage() {
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             {t("description")}
+          </p>
+          <p className="mt-2 text-sm font-medium text-foreground">
+            Next: {flows.length === 0 ? "Create or start from a Starter Kit" : "Publish a draft when ready"}
           </p>
         </div>
         <GatedButton
@@ -320,6 +332,7 @@ export default function FlowsPage() {
         </DialogContent>
       </Dialog>
     </div>
+    </FeatureGate>
   );
 }
 
@@ -333,25 +346,32 @@ function EmptyState({
   t: ReturnType<typeof useTranslations>;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-border bg-card/50 px-6 py-16 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-muted">
-        <Workflow className="h-6 w-6 text-muted-foreground" />
+    <div className="space-y-4">
+      <EmptyGuide
+        title={t("emptyTitle")}
+        description={t("emptyDesc")}
+        steps={[
+          { label: "Browse Starter Kits", href: "/starter-kits" },
+          { label: t("createFirst") },
+          { label: "Publish when ready" },
+        ]}
+      />
+      <div className="flex justify-center gap-2">
+        <Link
+          href="/starter-kits"
+          className={cn(buttonVariants({ variant: "outline" }))}
+        >
+          Starter Kits
+        </Link>
+        <GatedButton
+          canAct={canCreate}
+          gateReason="create flows"
+          onClick={onCreate}
+        >
+          <Plus className="h-4 w-4" />
+          {t("createFirst")}
+        </GatedButton>
       </div>
-      <h2 className="mt-4 text-base font-medium text-foreground">
-        {t("emptyTitle")}
-      </h2>
-      <p className="mt-1 max-w-md text-sm text-muted-foreground">
-        {t("emptyDesc")}
-      </p>
-      <GatedButton
-        canAct={canCreate}
-        gateReason="create flows"
-        onClick={onCreate}
-        className="mt-5"
-      >
-        <Plus className="h-4 w-4" />
-        {t("createFirst")}
-      </GatedButton>
     </div>
   );
 }

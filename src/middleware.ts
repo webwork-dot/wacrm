@@ -63,6 +63,8 @@ export async function middleware(request: NextRequest) {
       url.pathname = `/join/${encodeURIComponent(inviteToken)}`
       url.search = ''
     } else {
+      // Client shell redirects platform operators to /console after
+      // session context resolves; invite flow stays on join.
       url.pathname = '/dashboard'
       url.search = ''
     }
@@ -84,6 +86,7 @@ export async function middleware(request: NextRequest) {
     '/starter-kits',
     '/notifications',
     '/admin',
+    '/console',
   ]
   if (!user && protectedPaths.some(path => request.nextUrl.pathname.startsWith(path))) {
     const url = request.nextUrl.clone()

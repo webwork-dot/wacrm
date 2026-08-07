@@ -7,24 +7,32 @@ export async function GET() {
   try {
     const { admin } = await requirePlatformAdmin();
 
-    const [accounts, suspended, events, traces] = await Promise.all([
-      admin.from("accounts").select("id", { count: "exact", head: true }),
-      admin
-        .from("accounts")
-        .select("id", { count: "exact", head: true })
-        .eq("status", "suspended"),
-      admin
-        .from("platform_events")
-        .select("id", { count: "exact", head: true }),
-      admin
-        .from("usage_events")
-        .select("id", { count: "exact", head: true }),
+    const { data: platformRows } = await admin
+      .from("platform_users")
+      .select("user_id")
+      .eq("status", "active");
+    const platformOwnerIds = new Set(
+      (platformRows ?? []).map((r) => r.user_id as string),
+    );
+
+    const { data: allAccounts } = await admin
+      .from("accounts")
+      .select("id, status, owner_user_id");
+
+    const clients = (allAccounts ?? []).filter(
+      (a) => !platformOwnerIds.has(a.owner_user_id as string),
+    );
+    const suspended = clients.filter((a) => a.status === "suspended").length;
+
+    const [events, traces] = await Promise.all([
+      admin.from("platform_events").select("id", { count: "exact", head: true }),
+      admin.from("usage_events").select("id", { count: "exact", head: true }),
     ]);
 
     return NextResponse.json({
       ok: true,
-      accounts: accounts.count ?? 0,
-      suspended: suspended.count ?? 0,
+      accounts: clients.length,
+      suspended,
       platform_events: events.error ? null : (events.count ?? 0),
       usage_events: traces.error ? null : (traces.count ?? 0),
       env: {

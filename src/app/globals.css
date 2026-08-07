@@ -72,7 +72,7 @@
  * --sidebar-ring) live in the ACCENT blocks. They set disjoint
  * variables, so cascade order between them doesn't matter.
  *
- * `:root` carries the dark-mode + violet defaults so a visitor
+ * `:root` carries the dark-mode + Convexa brand defaults so a visitor
  * renders correctly before JS runs; the boot script in
  * layout.tsx replays the saved mode + accent before first paint.
  *
@@ -148,6 +148,21 @@ html[data-mode="light"] {
 /* ---- ACCENT: primary color ---- */
 
 :root,
+html[data-theme="convexa"] {
+  /* Logo electric blue #1078f8 + green accent #00b860 */
+  --primary: oklch(0.59 0.21 250);
+  --primary-foreground: oklch(0.985 0 0);
+  --primary-hover: oklch(0.65 0.19 250);
+  --primary-soft: oklch(0.59 0.21 250 / 0.12);
+  --primary-soft-2: oklch(0.59 0.21 250 / 0.22);
+  --ring: oklch(0.59 0.21 250);
+  --chart-1: oklch(0.59 0.21 250);
+  --chart-2: oklch(0.68 0.17 155);
+  --sidebar-primary: oklch(0.59 0.21 250);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-ring: oklch(0.59 0.21 250);
+}
+
 html[data-theme="violet"] {
   --primary: oklch(0.526 0.247 293);
   --primary-foreground: oklch(0.985 0 0);

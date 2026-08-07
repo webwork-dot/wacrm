@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { toErrorResponse } from "@/lib/auth/account";
-import { requirePlatformAdmin } from "@/lib/auth/platform-admin";
+import { requirePlatformPermission } from "@/lib/auth/platform-admin";
 
 /**
  * PATCH /api/admin/clients/[id]
@@ -12,7 +12,9 @@ export async function PATCH(
 ) {
   try {
     const { id } = await context.params;
-    const { admin, userId } = await requirePlatformAdmin();
+    const { admin, userId } = await requirePlatformPermission(
+      "platform.clients.write",
+    );
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== "object") {
       return NextResponse.json({ error: "Invalid body" }, { status: 400 });

@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
+import { useSession } from "@/hooks/use-session";
 import { useTotalUnread } from "@/hooks/use-total-unread";
 import { useUnreadNotifications } from "@/hooks/use-unread-notifications";
 import {
@@ -30,6 +31,21 @@ import {
 } from "lucide-react";
 import type { AccountRole } from "@/lib/auth/roles";
 
+const HREF_ICON: Record<string, typeof LayoutDashboard> = {
+  "/dashboard": LayoutDashboard,
+  "/inbox": MessageSquare,
+  "/notifications": Bell,
+  "/contacts": Users,
+  "/pipelines": GitBranch,
+  "/broadcasts": Radio,
+  "/automations": Zap,
+  "/flows": Workflow,
+  "/agents": Bot,
+  "/starter-kits": Package,
+  "/onboarding": Rocket,
+  "/settings": Settings,
+};
+
 // Per-role chip metadata used in the sidebar's account strip + the
 // Members tab roster. Keeping this near both consumers in a single
 // place avoids drift between the two surfaces — when a designer
@@ -51,6 +67,12 @@ const ROLE_CHIP: Record<
     // Primary-tinted: significant but not as scarce as owner.
     className:
       "border-primary/40 bg-primary/10 text-primary",
+  },
+  manager: {
+    icon: UsersRound,
+    labelKey: "roleManager",
+    className:
+      "border-sky-500/40 bg-sky-500/10 text-sky-300",
   },
   agent: {
     icon: UserCog,
@@ -121,8 +143,39 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
   const t = useTranslations("Sidebar");
   const pathname = usePathname();
   const { profile, profileLoading, account, accountRole, signOut } = useAuth();
+  const { nav: sessionNav } = useSession();
   const totalUnread = useTotalUnread();
   const unreadNotifications = useUnreadNotifications();
+
+  const { mainNav, settingsNav } = useMemo(() => {
+    if (sessionNav.length > 0) {
+      const mapped = sessionNav.map((item) => ({
+        href: item.href,
+        label: item.label,
+        icon: HREF_ICON[item.href] ?? LayoutDashboard,
+        beta: item.href === "/flows",
+      }));
+      return {
+        mainNav: mapped.filter((i) => i.href !== "/settings"),
+        settingsNav: mapped.filter((i) => i.href === "/settings"),
+      };
+    }
+    return {
+      mainNav: navItems.map((i) => ({
+        href: i.href,
+        label: t(i.labelKey),
+        icon: i.icon,
+        beta: i.beta,
+      })),
+      settingsNav: bottomNavItems.map((i) => ({
+        href: i.href,
+        label: t(i.labelKey),
+        icon: i.icon,
+        beta: false as boolean | undefined,
+      })),
+    };
+  }, [sessionNav, t]);
+
   // Only surface the account-name strip when it actually carries
   // information. A solo user's personal account is named after them
   // (the 017 signup trigger seeds it from `full_name`), so showing it
@@ -200,7 +253,8 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
             <img
               src="/logo.png"
               alt={t("title")}
-              className="block h-auto w-full object-cover object-center"
+              className="block object-contain"
+              style={{ width: "auto", margin: "10px auto", height: 50 }}
             />
           </Link>
           <button
@@ -216,7 +270,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
         {/* Main navigation */}
         <nav className="flex-1 overflow-y-auto px-3 py-4">
           <ul className="flex flex-col gap-1">
-            {navItems.map((item) => {
+            {mainNav.map((item) => {
               const isActive =
                 pathname === item.href ||
                 (item.href !== "/dashboard" && pathname.startsWith(item.href));
@@ -242,7 +296,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
                   >
                     <item.icon className="h-4 w-4" />
                     <span className="flex-1">
-                      {t(item.labelKey as string)}
+                      {item.label}
                       {showInboxBadge && (
                         <span className="sr-only">
                           {" "}
@@ -295,7 +349,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
           <div className="my-4 border-t border-border" />
 
           <ul className="flex flex-col gap-1">
-            {bottomNavItems.map((item) => {
+            {settingsNav.map((item) => {
               const isActive = pathname.startsWith(item.href);
               return (
                 <li key={item.href}>
@@ -309,7 +363,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
                     )}
                   >
                     <item.icon className="h-4 w-4" />
-                    {t(item.labelKey as string)}
+                    {item.label}
                   </Link>
                 </li>
               );
