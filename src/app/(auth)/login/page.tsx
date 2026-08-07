@@ -8,20 +8,8 @@ import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { UsersRound } from "lucide-react";
 
-// `useSearchParams` opts the component out of static prerendering
-// unless it sits under a Suspense boundary. We split the form into
-// a child component so the outer page can prerender the chrome
-// (background, card frame) while the form hydrates with the query
-// string on the client.
 export default function LoginPage() {
   return (
     <Suspense fallback={null}>
@@ -32,9 +20,6 @@ export default function LoginPage() {
 
 function LoginPageInner() {
   const searchParams = useSearchParams();
-  // Forwarded from `/join/<token>` when the visitor already has an
-  // account. After a successful sign-in we send them to the join
-  // page to accept rather than to /dashboard.
   const inviteToken = searchParams.get("invite");
   const t = useTranslations("LoginPage");
 
@@ -49,10 +34,7 @@ function LoginPageInner() {
     setError(null);
     setLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
       setError(error.message);
@@ -60,14 +42,6 @@ function LoginPageInner() {
       return;
     }
 
-    // Full-page navigation (not router.push) so the browser issues a
-    // fresh top-level request that carries the just-written Supabase
-    // auth cookies to the middleware gating /dashboard. A soft
-    // client-side navigation can reach the protected route before the
-    // server observes the new session, so the middleware bounces it
-    // back to /login — which looks like the page "just refreshing"
-    // instead of signing in (issue #365). Mirrors the deliberate full
-    // reload the invite-accept flow already uses in join/[token].
     let destination = inviteToken
       ? `/join/${encodeURIComponent(inviteToken)}`
       : "/dashboard";
@@ -76,100 +50,163 @@ function LoginPageInner() {
         const ctx = await fetch("/api/session/context").then((r) => r.json());
         if (ctx.surface === "platform") destination = "/console";
       } catch {
-        /* fall through to dashboard */
+        /* fall through */
       }
     }
     window.location.href = destination;
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <Card className="w-full max-w-md border-border bg-card">
-        <CardHeader className="items-center text-center">
+    <div className="flex min-h-screen bg-background">
+      {/* ── Left panel ─ hero / marketing ── */}
+      <div
+        className="relative hidden lg:flex lg:w-1/2 flex-col overflow-hidden"
+        style={{ background: "#f0ede8" }}
+      >
+        {/* logo */}
+        <div className="relative z-10 p-8">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.png" alt="Convexa" style={{ height: 40, width: "auto" }} />
+        </div>
+
+        {/* hero content */}
+        <div className="relative z-10 flex flex-1 flex-col items-center justify-center px-10 pb-10 text-center">
+          {/* image fills most of the panel height */}
+          <div className="w-full flex-1 flex items-center justify-center">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/welcome.png"
+              alt="Convexa – WhatsApp Business Platform"
+              className="h-full w-auto object-contain"
+              style={{ maxHeight: "60vh" }}
+            />
+          </div>
+
+          <h1 className="mb-2 text-2xl font-bold leading-tight text-gray-900">
+            Grow your business on{" "}
+            <span
+              style={{
+                background: "linear-gradient(90deg,#25d366,#128c7e)",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+              }}
+            >
+              WhatsApp
+            </span>
+          </h1>
+          <p className="max-w-sm text-sm leading-relaxed text-gray-500">
+            Send campaigns, automate replies, manage contacts, and track
+            everything — all in one place.
+          </p>
+        </div>
+      </div>
+
+      {/* ── Right panel ─ login form ── */}
+      <div className="flex w-full lg:w-1/2 flex-col items-center justify-center bg-white px-8 py-12">
+        {/* mobile logo */}
+        <div className="mb-8 lg:hidden">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.png" alt="Convexa" style={{ height: 40, width: "auto" }} />
+        </div>
+
+        <div className="w-full max-w-[360px]">
           {inviteToken ? (
-            <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
-              <UsersRound className="h-6 w-6 text-primary" />
+            <div className="mb-6 flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
+                <UsersRound className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-foreground">
+                  {t("titleAccept")}
+                </h2>
+                <p className="text-sm text-muted-foreground">{t("descAccept")}</p>
+              </div>
             </div>
-          ) : null}
-          <CardTitle className="text-xl text-foreground">
-            {inviteToken ? t('titleAccept') : t('titleWelcome')}
-          </CardTitle>
-          <CardDescription className="text-muted-foreground">
-            {inviteToken
-              ? t('descAccept')
-              : t('descWelcome')}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleLogin} className="flex flex-col gap-4">
+          ) : (
+            <div className="mb-8">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-widest text-gray-400">
+                Welcome back
+              </p>
+              <h2 className="text-2xl font-bold text-gray-900">Sign in to Convexa</h2>
+            </div>
+          )}
+
+          <form onSubmit={handleLogin} className="flex flex-col gap-5">
             {error && (
-              <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+              <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
                 {error}
               </div>
             )}
 
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="email" className="text-muted-foreground">
-                {t('emailLabel')}
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="email" className="text-sm font-medium text-gray-700">
+                {t("emailLabel")}
               </Label>
               <Input
                 id="email"
                 type="email"
-                placeholder={t('emailPlaceholder')}
+                placeholder={t("emailPlaceholder")}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="border-border bg-muted text-foreground placeholder:text-muted-foreground focus-visible:border-primary focus-visible:ring-primary/20"
+                className="h-11 border-gray-300 bg-white text-gray-900 placeholder:text-gray-400 focus-visible:border-primary focus-visible:ring-1 focus-visible:ring-primary/30"
               />
             </div>
 
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between">
-                <Label htmlFor="password" className="text-muted-foreground">
-                  {t('passwordLabel')}
+                <Label htmlFor="password" className="text-sm font-medium text-gray-700">
+                  {t("passwordLabel")}
                 </Label>
                 <Link
                   href="/forgot-password"
-                  className="text-sm text-primary hover:text-primary/80"
+                  className="text-xs text-primary hover:underline underline-offset-4"
                 >
-                  {t('forgotPassword')}
+                  {t("forgotPassword")}
                 </Link>
               </div>
               <Input
                 id="password"
                 type="password"
-                placeholder={t('passwordPlaceholder')}
+                placeholder={t("passwordPlaceholder")}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                className="border-border bg-muted text-foreground placeholder:text-muted-foreground focus-visible:border-primary focus-visible:ring-primary/20"
+                className="h-11 border-gray-300 bg-white text-gray-900 placeholder:text-gray-400 focus-visible:border-primary focus-visible:ring-1 focus-visible:ring-primary/30"
               />
             </div>
 
             <Button
               type="submit"
               disabled={loading}
-              className="mt-2 h-10 w-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+              className="mt-1 h-11 w-full text-sm font-semibold"
             >
-              {loading ? t('signingIn') : t('signIn')}
+              {loading ? (
+                <span className="flex items-center gap-2">
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                  {t("signingIn")}
+                </span>
+              ) : (
+                t("signIn")
+              )}
             </Button>
           </form>
 
-          <p className="mt-6 text-center text-sm text-muted-foreground">
-            {t('noAccount')}{" "}
+          <p className="mt-6 text-center text-sm text-gray-500">
+            {t("noAccount")}{" "}
             <Link
               href={
                 inviteToken
                   ? `/signup?invite=${encodeURIComponent(inviteToken)}`
                   : "/signup"
               }
-              className="text-primary hover:text-primary/80"
+              className="font-medium text-primary hover:underline underline-offset-4"
             >
-              {t('createAccount')}
+              {t("createAccount")}
             </Link>
           </p>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }
