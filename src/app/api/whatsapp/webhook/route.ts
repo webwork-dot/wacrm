@@ -1,5 +1,6 @@
 import { NextResponse, after } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { dbAdmin as createClient } from '@/lib/db/client'
+import { query } from '@/lib/db/pool'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
@@ -29,17 +30,8 @@ import {
 // plan's ceiling). Tune as needed.
 export const maxDuration = 60
 
-// Lazy-initialized to avoid build-time crash when env vars are missing
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _adminClient: any = null
 function supabaseAdmin() {
-  if (!_adminClient) {
-    _adminClient = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!
-    )
-  }
-  return _adminClient
+  return createClient()
 }
 
 interface WhatsAppMessage {
@@ -529,43 +521,47 @@ async function handleStatusUpdate(
   }
 
   // 1) Mirror onto messages scoped to this account's conversations.
-  const { data: msgRows, error: msgLookupErr } = await supabaseAdmin()
-    .from('messages')
-    .select('id, conversation_id, conversations!inner(account_id)')
-    .eq('message_id', status.id)
-    .eq('conversations.account_id', accountId)
-
-  if (msgLookupErr) {
-    console.error('Error looking up message status rows:', msgLookupErr)
-  } else if (msgRows && msgRows.length > 0) {
-    const ids = msgRows.map((r: { id: string }) => r.id)
-    const { error: msgErr } = await supabaseAdmin()
-      .from('messages')
-      .update({ status: status.status })
-      .in('id', ids)
-    if (msgErr) {
-      console.error('Error updating message status:', msgErr)
+  let msgRows: { id: string; conversation_id: string }[] = []
+  try {
+    const { rows } = await query<{ id: string; conversation_id: string }>(
+      `SELECT m.id, m.conversation_id
+       FROM messages m
+       INNER JOIN conversations c ON c.id = m.conversation_id
+       WHERE m.message_id = $1 AND c.account_id = $2`,
+      [status.id, accountId],
+    )
+    msgRows = rows
+    if (rows.length > 0) {
+      await query(
+        `UPDATE messages SET status = $2 WHERE id = ANY($1::uuid[])`,
+        [rows.map((r) => r.id), status.status],
+      )
     }
+  } catch (msgLookupErr) {
+    console.error('Error updating message status:', msgLookupErr)
   }
 
   // 2) Mirror onto broadcast_recipients for this account only.
   const tsIso = new Date(parseInt(status.timestamp) * 1000).toISOString()
 
-  const { data: recipient, error: recFetchErr } = await supabaseAdmin()
-    .from('broadcast_recipients')
-    .select('id, status, broadcasts!inner(account_id)')
-    .eq('whatsapp_message_id', status.id)
-    .eq('broadcasts.account_id', accountId)
-    .maybeSingle()
-
-  if (recFetchErr) {
+  let recipient: { id: string; status: string } | null = null
+  try {
+    const { rows } = await query<{ id: string; status: string }>(
+      `SELECT br.id, br.status
+       FROM broadcast_recipients br
+       INNER JOIN broadcasts b ON b.id = br.broadcast_id
+       WHERE br.whatsapp_message_id = $1 AND b.account_id = $2
+       LIMIT 1`,
+      [status.id, accountId],
+    )
+    recipient = rows[0] ?? null
+  } catch (recFetchErr) {
     console.error('Error fetching broadcast recipient:', recFetchErr)
-  } else if (
-    recipient &&
-    isValidStatusTransition(recipient.status, status.status)
-  ) {
+  }
+
+  if (recipient && isValidStatusTransition(recipient.status, status.status)) {
     const update: Record<string, unknown> = { status: status.status }
-    if (status.status === 'sent' && !('sent_at' in update)) update.sent_at = tsIso
+    if (status.status === 'sent') update.sent_at = tsIso
     if (status.status === 'delivered') update.delivered_at = tsIso
     if (status.status === 'read') update.read_at = tsIso
 
@@ -580,9 +576,7 @@ async function handleStatusUpdate(
   }
 
   // 3) Webhook fan-out for messages we store (inbox / API sends).
-  const firstMsg = msgRows?.[0] as
-    | { conversation_id: string }
-    | undefined
+  const firstMsg = msgRows[0] as { conversation_id: string } | undefined
   if (firstMsg?.conversation_id) {
     await dispatchWebhookEvent(
       supabaseAdmin(),

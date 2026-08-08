@@ -1,17 +1,13 @@
 import { NextResponse } from 'next/server'
-import { createClient as createAdminClient } from '@supabase/supabase-js'
+import { dbAdmin as createAdminClient } from '@/lib/db/client';
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 
 /**
  * GET/POST /api/ai/schema/apply
  *
- * Probes whether migration 033 (AI reply polish) is applied. Returns the
- * SQL so an admin can paste it into the Supabase SQL Editor.
- *
- * POST is identical to GET for this route — kept so the Settings UI can
- * call it as an "Apply / check" action. Actual DDL cannot run through
- * the service-role REST key; operators must execute the SQL once in
- * Supabase (or set SUPABASE_DB_URL and use a local `psql`).
+ * Probes whether legacy AI reply polish columns/tables are present.
+ * New installs get these via `database/migrations` — this route is a
+ * diagnostic for upgraded databases. POST matches GET for the Settings UI.
  */
 
 export const MIGRATION_033_SQL = `-- 033_ai_reply_polish.sql (idempotent)
@@ -19,7 +15,7 @@ ALTER TABLE messages
   ADD COLUMN IF NOT EXISTS ai_generated boolean NOT NULL DEFAULT false;
 
 ALTER TABLE ai_configs
-  ADD COLUMN IF NOT EXISTS handoff_agent_id uuid REFERENCES auth.users(id) ON DELETE SET NULL;
+  ADD COLUMN IF NOT EXISTS handoff_agent_id uuid REFERENCES users(id) ON DELETE SET NULL;
 
 ALTER TABLE conversations
   ADD COLUMN IF NOT EXISTS ai_handoff_summary text;
@@ -63,10 +59,7 @@ async function probeSchema(): Promise<{
   needsMigration: boolean
   missing: string[]
 }> {
-  const admin = createAdminClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  )
+  const admin = createAdminClient()
   const missing: string[] = []
 
   const { error: handoffErr } = await admin
@@ -107,7 +100,7 @@ async function handle() {
     ...probe,
     sql: MIGRATION_033_SQL,
     instructions:
-      'Open Supabase → SQL Editor → New query → paste sql → Run. Then reload Settings → AI.',
+      'If needsMigration is true, run npm run db:migrate (or apply sql via psql), then reload Settings → AI.',
   })
 }
 

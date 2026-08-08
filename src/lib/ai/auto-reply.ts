@@ -195,7 +195,16 @@ export async function dispatchInboundToAiReply(
       console.error('[ai auto-reply] claim_ai_reply_slot failed:', claimErr)
       return
     }
-    if (claimed !== true) return // lost the per-conversation cap race
+    if (claimed !== true) {
+      // Shim may return { claim_ai_reply_slot: true } if unwrap missed.
+      const ok =
+        claimed === true ||
+        (claimed &&
+          typeof claimed === "object" &&
+          (claimed as { claim_ai_reply_slot?: boolean }).claim_ai_reply_slot ===
+            true);
+      if (!ok) return;
+    }
 
     await engineSendText({
       accountId,

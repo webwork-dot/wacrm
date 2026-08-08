@@ -36,12 +36,20 @@ async function requireOwnership(
   if (!user) {
     return { ok: false, status: 401, body: { error: 'Unauthorized' } }
   }
-  // RLS scopes this to the caller's account — a flow in another
-  // account returns null (404 below).
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('account_id')
+    .eq('user_id', user.id)
+    .maybeSingle()
+  const accountId = profile?.account_id as string | undefined
+  if (!accountId) {
+    return { ok: false, status: 403, body: { error: 'Profile is not linked to an account.' } }
+  }
   const { data: flow } = await supabase
     .from('flows')
     .select('id, account_id')
     .eq('id', flowId)
+    .eq('account_id', accountId)
     .maybeSingle()
   if (!flow?.account_id) {
     return { ok: false, status: 404, body: { error: 'Not found' } }
@@ -49,7 +57,7 @@ async function requireOwnership(
   return {
     ok: true,
     userId: user.id,
-    accountId: flow.account_id as string,
+    accountId,
     supabase,
   }
 }

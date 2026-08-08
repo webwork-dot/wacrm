@@ -133,5 +133,5 @@ export async function deleteAccountMedia(
 ): Promise<void> {
   const supabase = createClient();
   const { error } = await supabase.storage.from(bucket).remove([path]);
-  if (error) throw new Error(error.message);
+  if (error) throw new Error((error as { message?: string }).message || "Delete failed");
 }

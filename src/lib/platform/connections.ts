@@ -3,7 +3,7 @@
  * Features store `connection_id`; never raw secrets.
  */
 
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { DbClient as SupabaseClient } from '@/lib/db/client';
 import { decrypt, encrypt } from "@/lib/whatsapp/encryption";
 
 export type ConnectionType =

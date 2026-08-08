@@ -44,6 +44,7 @@ export function ProfileForm() {
   const [removeAvatar, setRemoveAvatar] = useState(false);
   const [saving, setSaving] = useState(false);
   const [emailChangePending, setEmailChangePending] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
 
   // Seed form state once the profile loads.
   useEffect(() => {
@@ -158,11 +159,16 @@ export function ProfileForm() {
       // trigger pattern in production deployments).
       let emailSent = false;
       if (trimmedEmail.toLowerCase() !== profile.email.toLowerCase()) {
+        if (!currentPassword) {
+          toast.error(t('currentPasswordRequired') || 'Enter your current password to change email');
+          setSaving(false);
+          return;
+        }
         const { error: emailError } = await supabase.auth.updateUser({
           email: trimmedEmail,
+          currentPassword,
         });
         if (emailError) {
-          // Partial success: name/avatar saved but email didn't.
           toast.success(t('profileSaved'));
           toast.error(t('emailChangeFailed', { message: emailError.message }));
           setSaving(false);
@@ -170,6 +176,7 @@ export function ProfileForm() {
           return;
         }
         emailSent = true;
+        setCurrentPassword('');
       }
 
       setEmailChangePending(emailSent);
@@ -301,6 +308,26 @@ export function ProfileForm() {
                   })}
                 </span>
               </p>
+            )}
+            {profile &&
+              email.trim().toLowerCase() !== (profile.email ?? '').toLowerCase() && (
+              <div className="space-y-2 pt-1">
+                <Label htmlFor="profile-current-password" className="text-foreground">
+                  Current password
+                </Label>
+                <Input
+                  id="profile-current-password"
+                  type="password"
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  disabled={saving}
+                  autoComplete="current-password"
+                  required
+                />
+                <p className="text-xs text-muted-foreground">
+                  Required to confirm an email change.
+                </p>
+              </div>
             )}
           </div>
 

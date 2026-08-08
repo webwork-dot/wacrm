@@ -2,7 +2,7 @@
  * Onboarding checklist — guided "what next?" for DIY setup.
  */
 
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { DbClient as SupabaseClient } from '@/lib/db/client';
 
 export interface OnboardingStep {
   id: string;

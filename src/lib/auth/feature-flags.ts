@@ -1,8 +1,8 @@
 /**
- * Feature Flags — locked module.
+ * Feature Flags — plain PostgreSQL.
  */
 
-import type { SupabaseClient } from "@supabase/supabase-js";
+import { query } from "@/lib/db/pool";
 
 const DEFAULT_FLAGS: Record<string, boolean> = {
   broadcasts: true,
@@ -16,32 +16,34 @@ const DEFAULT_FLAGS: Record<string, boolean> = {
 };
 
 /**
- * Resolve effective flags: global defaults, then global DB rows,
- * then account overrides (account wins).
+ * Resolve effective flags: defaults → global DB → account overrides.
  */
 export async function loadFeatureFlags(
-  db: SupabaseClient,
+  _db?: unknown,
   accountId?: string | null,
 ): Promise<Record<string, boolean>> {
   const out = { ...DEFAULT_FLAGS };
   try {
-    const { data, error } = await db
-      .from("feature_flags")
-      .select("key, enabled, account_id")
-      .or(
-        accountId
-          ? `account_id.is.null,account_id.eq.${accountId}`
-          : "account_id.is.null",
-      );
-    if (error) return out;
-    const globals = (data ?? []).filter((r) => r.account_id == null);
-    const overrides = (data ?? []).filter(
-      (r) => accountId && r.account_id === accountId,
+    const { rows } = await query<{
+      key: string;
+      enabled: boolean;
+      account_id: string | null;
+    }>(
+      accountId
+        ? `SELECT key, enabled, account_id FROM feature_flags
+           WHERE account_id IS NULL OR account_id = $1`
+        : `SELECT key, enabled, account_id FROM feature_flags
+           WHERE account_id IS NULL`,
+      accountId ? [accountId] : [],
     );
-    for (const g of globals) out[g.key] = g.enabled;
-    for (const o of overrides) out[o.key] = o.enabled;
+    for (const g of rows.filter((r) => r.account_id == null)) {
+      out[g.key] = g.enabled;
+    }
+    for (const o of rows.filter((r) => accountId && r.account_id === accountId)) {
+      out[o.key] = o.enabled;
+    }
   } catch {
-    /* pre-045 */
+    /* table missing */
   }
   return out;
 }

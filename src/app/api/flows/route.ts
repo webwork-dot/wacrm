@@ -33,11 +33,25 @@ export async function GET() {
   if (!guard.ok) {
     return NextResponse.json(guard.body, { status: guard.status })
   }
-  const { supabase } = guard
+  const { supabase, userId } = guard
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('account_id')
+    .eq('user_id', userId)
+    .maybeSingle()
+  const accountId = profile?.account_id as string | undefined
+  if (!accountId) {
+    return NextResponse.json(
+      { error: 'Profile is not linked to an account.' },
+      { status: 403 },
+    )
+  }
 
   const { data, error } = await supabase
     .from('flows')
     .select('*')
+    .eq('account_id', accountId)
     .order('created_at', { ascending: false })
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })

@@ -1,10 +1,10 @@
 /**
- * Platform operator access.
- * PLATFORM_ADMIN_EMAILS bootstraps platform_users once; then DB + Permission Engine.
+ * Platform operator access — plain PostgreSQL + native sessions.
  */
 
-import { createClient } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/flows/admin-client";
+import { getRequestUser } from "@/lib/auth/session-cookies";
+import { dbAdmin, type DbClient } from "@/lib/db/client";
+import { query } from "@/lib/db/pool";
 import {
   ForbiddenError,
   UnauthorizedError,
@@ -29,8 +29,7 @@ export interface PlatformAdminContext {
   email: string;
   platformRole: PlatformRole;
   permissions: Permission[];
-  admin: ReturnType<typeof supabaseAdmin>;
-  supabase: Awaited<ReturnType<typeof createClient>>;
+  admin: DbClient;
 }
 
 function platformAdminEmails(): Set<string> {
@@ -50,101 +49,66 @@ export function isPlatformAdminEmail(email: string | null | undefined): boolean 
   return allow.has(email.trim().toLowerCase());
 }
 
-async function loadPlatformPermissions(
-  admin: ReturnType<typeof supabaseAdmin>,
-  role: PlatformRole,
-): Promise<Permission[]> {
-  const { data, error } = await admin
-    .from("role_permissions")
-    .select("permission_key")
-    .eq("platform_role", role);
-  if (error || !data?.length) {
-    return fallbackPermissions({ platformRole: role });
-  }
-  return data.map((r) => r.permission_key as Permission);
+async function loadPlatformPermissions(role: PlatformRole): Promise<Permission[]> {
+  const { rows } = await query<{ permission_key: string }>(
+    `SELECT permission_key FROM role_permissions WHERE platform_role = $1`,
+    [role],
+  );
+  if (!rows.length) return fallbackPermissions({ platformRole: role });
+  return rows.map((r) => r.permission_key as Permission);
 }
 
-/**
- * Resolve platform user: DB row first; else bootstrap from allowlist.
- */
 export async function resolvePlatformUser(
   userId: string,
   email: string,
 ): Promise<PlatformUserRow | null> {
-  const admin = supabaseAdmin();
+  const { rows } = await query<{
+    user_id: string;
+    platform_role: PlatformRole;
+    status: string;
+  }>(
+    `SELECT user_id, platform_role, status FROM platform_users WHERE user_id = $1`,
+    [userId],
+  );
 
-  const { data: existing } = await admin
-    .from("platform_users")
-    .select("user_id, platform_role, status")
-    .eq("user_id", userId)
-    .maybeSingle();
-
+  const existing = rows[0];
   if (existing) {
-    if ((existing as { status: string }).status === "disabled") return null;
-    await admin
-      .from("platform_users")
-      .update({ last_login_at: new Date().toISOString() })
-      .eq("user_id", userId);
+    if (existing.status === "disabled") return null;
+    await query(
+      `UPDATE platform_users SET last_login_at = NOW() WHERE user_id = $1`,
+      [userId],
+    );
     return {
       userId,
       email,
-      platformRole: (existing as { platform_role: PlatformRole }).platform_role,
+      platformRole: existing.platform_role,
       status: "active",
     };
   }
 
   if (!isPlatformAdminEmail(email)) return null;
 
-  // Bootstrap: create platform owner from allowlist
-  const { error } = await admin.from("platform_users").upsert({
-    user_id: userId,
-    platform_role: "owner",
-    status: "active",
-    last_login_at: new Date().toISOString(),
-  });
-  if (error) {
-    // Table missing (pre-045) — fall back to email-only for transition
-    console.warn("[platform] bootstrap upsert failed:", error.message);
-    return {
-      userId,
-      email,
-      platformRole: "owner",
-      status: "active",
-    };
-  }
-
-  return {
-    userId,
-    email,
-    platformRole: "owner",
-    status: "active",
-  };
+  // Do NOT auto-promote on email match alone — that lets an attacker
+  // change their email to an allowlisted address and become platform owner.
+  // Bootstrap only via db:seed / explicit platform_users insert.
+  return null;
 }
 
 export async function requirePlatformAdmin(): Promise<PlatformAdminContext> {
-  const supabase = await createClient();
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
-  if (error || !user) throw new UnauthorizedError();
+  const user = await getRequestUser();
+  if (!user) throw new UnauthorizedError();
 
-  const email = user.email ?? "";
-  const row = await resolvePlatformUser(user.id, email);
-  if (!row) {
-    throw new ForbiddenError("Platform admin access required");
-  }
+  const row = await resolvePlatformUser(user.id, user.email);
+  if (!row) throw new ForbiddenError("Platform admin access required");
 
-  const admin = supabaseAdmin();
-  const permissions = await loadPlatformPermissions(admin, row.platformRole);
+  const permissions = await loadPlatformPermissions(row.platformRole);
 
   return {
     userId: user.id,
-    email,
+    email: user.email,
     platformRole: row.platformRole,
     permissions,
-    admin,
-    supabase,
+    admin: dbAdmin(),
   };
 }
 
@@ -160,12 +124,9 @@ export async function requirePlatformPermission(
 
 export async function checkPlatformAdminSession(): Promise<boolean> {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const user = await getRequestUser();
     if (!user) return false;
-    const row = await resolvePlatformUser(user.id, user.email ?? "");
+    const row = await resolvePlatformUser(user.id, user.email);
     return !!row;
   } catch {
     return false;

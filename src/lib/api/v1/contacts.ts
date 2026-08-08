@@ -7,7 +7,7 @@
 // webhook and send path use), and one tag-sync routine.
 // ============================================================
 
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { DbClient as SupabaseClient } from '@/lib/db/client';
 
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe';
 import { resolveImportTagIds } from '@/lib/contacts/resolve-import-tags';
@@ -184,12 +184,16 @@ export async function setContactTags(
   if (readErr) {
     throw new ContactError('Failed to read contact tags', 500);
   }
-  const existing = new Set(
-    (current ?? []).map((r) => r.tag_id as string)
+  const existing = new Set<string>(
+    ((current ?? []) as Array<{ tag_id?: unknown }>)
+      .map((r) => r.tag_id)
+      .filter((id): id is string => typeof id === "string"),
   );
 
-  const toAdd = [...desired].filter((id) => !existing.has(id));
-  const toRemove = [...existing].filter((id) => !desired.has(id));
+  const desiredIds = [...desired].filter((id): id is string => typeof id === "string");
+  const desiredSet = new Set<string>(desiredIds);
+  const toAdd = desiredIds.filter((id) => !existing.has(id));
+  const toRemove = [...existing].filter((id) => !desiredSet.has(id));
 
   if (toRemove.length > 0) {
     const { error } = await db

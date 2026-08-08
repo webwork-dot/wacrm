@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { randomBytes } from "crypto";
 import { toErrorResponse } from "@/lib/auth/account";
 import { requirePlatformPermission } from "@/lib/auth/platform-admin";
+import { hashPassword } from "@/lib/auth/native";
+import { query } from "@/lib/db/pool";
 
 function generateTempPassword(): string {
   // Readable temp password — client should change after first login.
@@ -188,12 +190,11 @@ export async function POST(request: Request) {
       );
     }
 
-    const { data: existingProfile } = await admin
-      .from("profiles")
-      .select("user_id, email")
-      .ilike("email", ownerEmail)
-      .maybeSingle();
-    if (existingProfile) {
+    const { rows: existingUsers } = await query<{ id: string }>(
+      `SELECT id FROM users WHERE lower(email) = lower($1) LIMIT 1`,
+      [ownerEmail],
+    );
+    if (existingUsers[0]) {
       return NextResponse.json(
         { error: "A user with this email already exists" },
         { status: 409 },
@@ -202,89 +203,63 @@ export async function POST(request: Request) {
 
     const passwordGenerated = !password;
     if (!password) password = generateTempPassword();
-    if (password.length < 6) {
+    if (password.length < 8) {
       return NextResponse.json(
-        { error: "Password must be at least 6 characters" },
+        { error: "Password must be at least 8 characters" },
         { status: 400 },
       );
     }
 
-    const { data: created, error: createErr } =
-      await admin.auth.admin.createUser({
-        email: ownerEmail,
-        password,
-        email_confirm: true,
-        user_metadata: {
-          full_name: ownerName || companyName,
-        },
-      });
-
-    if (createErr || !created.user) {
+    const encrypted = await hashPassword(password);
+    const { rows: createdUsers } = await query<{ id: string }>(
+      `INSERT INTO users (email, encrypted_password, full_name, email_confirmed_at, is_active)
+       VALUES ($1, $2, $3, NOW(), true)
+       RETURNING id`,
+      [ownerEmail, encrypted, ownerName || companyName],
+    );
+    const ownerUserId = createdUsers[0]?.id;
+    if (!ownerUserId) {
       return NextResponse.json(
-        { error: createErr?.message ?? "Could not create owner login" },
+        { error: "Could not create owner login" },
         { status: 500 },
       );
     }
 
-    const ownerUserId = created.user.id;
+    const { data: acct, error: acctErr } = await admin
+      .from("accounts")
+      .insert({
+        name: companyName,
+        display_name: companyName,
+        owner_user_id: ownerUserId,
+        status: "active",
+      })
+      .select("id")
+      .single();
 
-    // Signup trigger creates a personal account — rename it to the company.
-    const { data: profile } = await admin
-      .from("profiles")
-      .select("account_id")
-      .eq("user_id", ownerUserId)
-      .maybeSingle();
-
-    let accountId = profile?.account_id as string | undefined;
-
-    if (!accountId) {
-      const { data: acct, error: acctErr } = await admin
-        .from("accounts")
-        .insert({
-          name: companyName,
-          display_name: companyName,
-          owner_user_id: ownerUserId,
-          status: "active",
-        })
-        .select("id")
-        .single();
-      if (acctErr || !acct) {
-        await admin.auth.admin.deleteUser(ownerUserId);
-        return NextResponse.json(
-          { error: acctErr?.message ?? "Could not create workspace" },
-          { status: 500 },
-        );
-      }
-      accountId = acct.id;
-      await admin.from("profiles").upsert({
-        user_id: ownerUserId,
-        email: ownerEmail,
-        full_name: ownerName || companyName,
-        account_id: accountId,
-        account_role: "owner",
-      });
-    } else {
-      const { error: updErr } = await admin
-        .from("accounts")
-        .update({
-          name: companyName,
-          display_name: companyName,
-          status: "active",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", accountId);
-      if (updErr) {
-        return NextResponse.json({ error: updErr.message }, { status: 500 });
-      }
-      await admin
-        .from("profiles")
-        .update({
-          full_name: ownerName || companyName,
-          email: ownerEmail,
-          account_role: "owner",
-        })
-        .eq("user_id", ownerUserId);
+    if (acctErr || !acct) {
+      await query(`DELETE FROM users WHERE id = $1`, [ownerUserId]);
+      return NextResponse.json(
+        { error: (acctErr as { message?: string })?.message ?? "Could not create workspace" },
+        { status: 500 },
+      );
     }
+
+    const accountId = (acct as { id: string }).id;
+
+    await admin.from("profiles").insert({
+      user_id: ownerUserId,
+      email: ownerEmail,
+      full_name: ownerName || companyName,
+      account_id: accountId,
+      account_role: "owner",
+    });
+
+    // Best-effort onboarding row (table from migration 010)
+    await query(
+      `INSERT INTO client_onboarding (account_id) VALUES ($1)
+       ON CONFLICT (account_id) DO NOTHING`,
+      [accountId],
+    ).catch(() => undefined);
 
     void admin.from("platform_events").insert({
       account_id: accountId,
@@ -295,6 +270,17 @@ export async function POST(request: Request) {
         ownerEmail,
       },
     });
+
+    await query(
+      `INSERT INTO activity_logs (account_id, actor_user_id, event_type, title, meta)
+       VALUES ($1, $2, 'admin.client.created', $3, $4::jsonb)`,
+      [
+        accountId,
+        userId,
+        `Client workspace created: ${companyName}`,
+        JSON.stringify({ ownerEmail }),
+      ],
+    ).catch(() => undefined);
 
     return NextResponse.json({
       success: true,

@@ -13,7 +13,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-violet.svg)](./LICENSE)
 [![CI](https://github.com/ArnasDon/wacrm/actions/workflows/ci.yml/badge.svg)](https://github.com/ArnasDon/wacrm/actions/workflows/ci.yml)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-black?logo=nextdotjs)](https://nextjs.org)
-[![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20Auth-3ecf8e?logo=supabase)](https://supabase.com)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15%2B-4169E1?logo=postgresql)](https://www.postgresql.org/)
 [![Stars](https://img.shields.io/github/stars/ArnasDon/wacrm?style=social)](https://github.com/ArnasDon/wacrm/stargazers)
 
 The marketing site and self-host docs live in a separate repo:
@@ -59,18 +59,18 @@ clone or fork it to run your own CRM.
 
 This is a **template**, not a product. Forking means you get:
 
-- **Full ownership** — your code, your Supabase project, your domain,
+- **Full ownership** — your code, your PostgreSQL database, your domain,
   your data. No SaaS lock-in, no seat pricing, no trust dance.
 - **Full customisation** — add the fields your team needs, remove the
   modules you don't, redesign anything. The stack is boring on
-  purpose (Next.js + Supabase + Tailwind) so the learning curve is
+  purpose (Next.js + PostgreSQL + Tailwind) so the learning curve is
   short.
 - **Zero ops to start** — [Hostinger](https://www.hostinger.com/web-apps-hosting)
   Managed Node.js deploys a fork in a few clicks. No Docker, no
   Kubernetes, no infra team needed.
   ([See below ↓](#-deploy-on-hostinger-recommended))
-- **Real security primitives** — token encryption (AES-256-GCM), RLS
-  on every table, HMAC-verified webhooks, CSP, rate limiting, CI
+- **Real security primitives** — token encryption (AES-256-GCM),
+  native JWT sessions, HMAC-verified webhooks, CSP, rate limiting, CI
   typecheck/build on every PR.
 
 Not a framework. Not an SDK. A concrete, working CRM you can stand up
@@ -83,12 +83,14 @@ in an afternoon and make yours.
 git clone https://github.com/<your-username>/wacrm.git
 cd wacrm
 npm install
-cp .env.local.example .env.local   # fill in Supabase + Meta creds
+cp .env.example .env   # fill in DATABASE_URL + SESSION_SECRET + Meta
+npm run db:migrate
+npm run db:seed
 npm run dev
 ```
 
-Open <http://localhost:3000>. You'll be redirected to `/login` (or
-`/dashboard` if already signed in).
+Open <http://localhost:3000>. Full VPS guide:
+[docs/INSTALL_SELF_HOSTED.md](./docs/INSTALL_SELF_HOSTED.md).
 
 ## 🚀 Deploy on Hostinger (recommended)
 
@@ -116,9 +118,9 @@ Kubernetes cluster.
 | **Managed Node.js** | Next.js 16 (App Router, server actions, ISR) runs out of the box on [Premium, Business, and Cloud](https://www.hostinger.com/web-apps-hosting) shared plans. You don't manage Node versions, processes, or reverse proxies. |
 | **Free SSL + free domain** | Automatic Let's Encrypt on your custom domain (or a free one included with annual plans). HTTPS is on by default — required for the WhatsApp Business webhook. |
 | **Global CDN + LiteSpeed** | Static assets cached at the edge, dynamic routes served from LiteSpeed. Snappy dashboards out of the box, no Cloudflare setup required. |
-| **Env vars + logs in hPanel** | Set `SUPABASE_*`, `WHATSAPP_*`, and `ENCRYPTION_KEY` from the panel — no `.env` on the server. Live application logs in the same UI. |
+| **Env vars + logs in hPanel** | Set `DATABASE_URL`, `SESSION_SECRET`, `WHATSAPP_*`, and `ENCRYPTION_KEY` from the panel — no `.env` on the server. Live application logs in the same UI. |
 | **DDoS protection + daily backups** | Built-in, no add-ons. The webhook endpoint is a public target — having protection at the edge matters. |
-| **Cheaper than a VPS** | Plans start at a few dollars a month — order-of-magnitude less than a comparable managed Node.js host, and you don't pay extra for the database (that's Supabase). |
+| **Cheaper than a VPS** | Plans start at a few dollars a month — order-of-magnitude less than a comparable managed Node.js host when you bring your own PostgreSQL. |
 | **24/7 human support** | Live chat support in 20+ languages — useful when your CRM is the thing your team relies on to talk to customers. |
 
 ### The 60-second version
@@ -126,7 +128,7 @@ Kubernetes cluster.
 1. **Fork** this repo on GitHub.
 2. In **hPanel → Websites → Create**, pick **Node.js** and connect
    your fork.
-3. Paste your Supabase + Meta env vars into hPanel.
+3. Paste your `DATABASE_URL`, `SESSION_SECRET`, and Meta env vars into hPanel.
 4. Push to `main`. Hostinger builds and serves it. Done.
 
 Full walkthrough with screenshots:
@@ -138,26 +140,23 @@ Full walkthrough with screenshots:
 
 ## Documentation
 
-Full self-host documentation — Supabase migrations, WhatsApp Business
-API config, and production deploy — lives at
-**[wacrm.tech/docs](https://wacrm.tech/docs)**
-(source: [ArnasDon/wacrm-site](https://github.com/ArnasDon/wacrm-site)).
+In-repo production docs:
 
-Key pages:
-- [Getting started](https://wacrm.tech/docs/getting-started)
-- [Supabase setup](https://wacrm.tech/docs/supabase-setup)
-- [WhatsApp setup](https://wacrm.tech/docs/whatsapp-setup)
-- [Environment variables](https://wacrm.tech/docs/environment-variables)
-- [Deploy on Hostinger](https://wacrm.tech/docs/deployment-hostinger)
-- [Architecture](https://wacrm.tech/docs/architecture)
-- [Troubleshooting](https://wacrm.tech/docs/troubleshooting)
+- [Self-hosted install](./docs/INSTALL_SELF_HOSTED.md)
+- [Architecture](./docs/ARCHITECTURE.md)
+- [Database](./docs/DATABASE.md)
+- [Authentication](./docs/AUTHENTICATION.md)
+- [Public API](./docs/public-api.md)
+- [MCP](./docs/mcp.md)
+
+External marketing docs may still mention older hosting paths; prefer the in-repo guides above for Convexa production installs.
 
 ## Stack
 
 - **App** — Next.js 16 (App Router), React 19, TypeScript, Tailwind v4.
-- **Data** — Supabase (Postgres + Auth + Storage + RLS).
+- **Data** — Plain PostgreSQL 15+ (`pg`), native JWT/cookie auth, local file storage.
 - **WhatsApp** — Meta Cloud API (official WhatsApp Business API).
-
+- **AI** — Bring-your-own OpenAI / Anthropic / Gemini keys.
 ## Contributing
 
 This is a template, not a collaborative product — the expected flow is

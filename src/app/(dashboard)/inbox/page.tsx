@@ -6,7 +6,6 @@ import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  CONVERSATION_SELECT,
   normalizeConversation,
   sortConversations,
 } from "@/lib/inbox/conversations";
@@ -135,28 +134,12 @@ function InboxPageInner() {
     if (hydratingConvIdsRef.current.has(convId)) return;
     hydratingConvIdsRef.current.add(convId);
     try {
-      const supabase = createClient();
-      let query = supabase
-        .from("conversations")
-        .select(CONVERSATION_SELECT)
-        .eq("id", convId);
-      if (accountId) {
-        query = query.eq("account_id", accountId);
-      }
-      const { data, error } = await query.maybeSingle();
-      if (error) {
-        // Supabase errors have non-enumerable properties — log fields
-        // explicitly so the console message isn't just `{}`.
-        console.error("Failed to hydrate conversation:", {
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
-        });
-        return;
-      }
-      if (!data) return;
-      const fetched = normalizeConversation(data);
+      const res = await fetch("/api/inbox/conversations");
+      if (!res.ok) return;
+      const json = await res.json();
+      const list = (json.conversations ?? []) as Conversation[];
+      const fetched = list.find((c) => c.id === convId);
+      if (!fetched) return;
       setConversations((prev) => {
         const existing = prev.find((c) => c.id === fetched.id);
         if (existing) {
@@ -176,7 +159,7 @@ function InboxPageInner() {
     } finally {
       hydratingConvIdsRef.current.delete(convId);
     }
-  }, [accountId]);
+  }, []);
 
   // Check WhatsApp connection status on mount
   useEffect(() => {

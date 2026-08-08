@@ -2,7 +2,7 @@
  * Software plans + soft quota helpers (Convexa software only).
  */
 
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { DbClient as SupabaseClient } from '@/lib/db/client';
 import { supabaseAdmin } from "@/lib/flows/admin-client";
 
 export type UsageEventType =

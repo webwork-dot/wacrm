@@ -129,7 +129,21 @@ vi.mock('@/lib/flows/admin-client', () => ({
     from: () => {
       const b: Record<string, unknown> = {}
       const chain = () => b
-      for (const m of ['update', 'eq', 'select']) b[m] = vi.fn(chain)
+      for (const m of [
+        'update',
+        'eq',
+        'select',
+        'insert',
+        'in',
+        'order',
+        'limit',
+        'single',
+        'maybeSingle',
+      ]) {
+        b[m] = vi.fn(chain)
+      }
+      b.maybeSingle = vi.fn(async () => ({ data: null, error: null }))
+      b.single = vi.fn(async () => ({ data: null, error: null }))
       b.then = (resolve: (v: unknown) => unknown) =>
         resolve({ data: null, error: null })
       return b

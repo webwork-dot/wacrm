@@ -117,12 +117,12 @@ export function ConversationInsights({ conversation }: ConversationInsightsProps
       );
       setAgentName(
         conversation.assigned_agent_id
-          ? map.get(conversation.assigned_agent_id) ?? null
+          ? (map.get(conversation.assigned_agent_id) as string | undefined) ?? null
           : null,
       );
       setLastRepliedName(
         conversation.last_replied_by
-          ? map.get(conversation.last_replied_by) ?? null
+          ? (map.get(conversation.last_replied_by) as string | undefined) ?? null
           : null,
       );
     } else {

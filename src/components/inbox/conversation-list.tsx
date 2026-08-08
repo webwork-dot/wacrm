@@ -4,7 +4,6 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  CONVERSATION_SELECT,
   matchesContactFilters,
   matchesInboxFilter,
   matchesInboxSearch,
@@ -134,32 +133,28 @@ export function ConversationList({
   });
 
   useEffect(() => {
-    const supabase = createClient();
     let cancelled = false;
 
     (async () => {
-      const { data, error } = await supabase
-        .from("conversations")
-        .select(CONVERSATION_SELECT)
-        .order("last_message_at", { ascending: false });
-
-      if (cancelled) return;
-
-      if (error) {
-        console.error("Failed to fetch conversations:", {
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
-        });
-        setLoading(false);
-        return;
+      try {
+        const res = await fetch("/api/inbox/conversations");
+        if (cancelled) return;
+        if (!res.ok) {
+          console.error("Failed to fetch conversations:", res.status);
+          setLoading(false);
+          return;
+        }
+        const json = await res.json();
+        onConversationsLoadedRef.current(
+          sortConversations(
+            normalizeConversations(json.conversations ?? []),
+          ),
+        );
+      } catch (err) {
+        console.error("Failed to fetch conversations:", err);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      onConversationsLoadedRef.current(
-        sortConversations(normalizeConversations(data ?? [])),
-      );
-      setLoading(false);
     })();
 
     return () => {

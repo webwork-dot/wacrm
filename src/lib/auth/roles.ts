@@ -41,7 +41,8 @@ export function isAccountRole(value: unknown): value is AccountRole {
 }
 
 /** Owner / admin: invite, remove, change roles. */
-export function canManageMembers(role: AccountRole): boolean {
+export function canManageMembers(role: AccountRole | null | undefined): boolean {
+  if (!role) return false;
   return hasMinRole(role, "admin");
 }
 
@@ -49,12 +50,14 @@ export function canManageMembers(role: AccountRole): boolean {
  * Owner / admin: edit account-wide settings (WhatsApp, AI keys, etc.).
  * Manager cannot edit credential settings.
  */
-export function canEditSettings(role: AccountRole): boolean {
+export function canEditSettings(role: AccountRole | null | undefined): boolean {
+  if (!role) return false;
   return hasMinRole(role, "admin");
 }
 
 /** Owner / admin / manager / agent: operational writes. */
-export function canSendMessages(role: AccountRole): boolean {
+export function canSendMessages(role: AccountRole | null | undefined): boolean {
+  if (!role) return false;
   return hasMinRole(role, "agent");
 }
 

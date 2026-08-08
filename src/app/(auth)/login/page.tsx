@@ -4,7 +4,6 @@ import { Suspense, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
-import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -25,35 +24,39 @@ function LoginPageInner() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const supabase = createClient();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-
-    if (error) {
-      setError(error.message);
-      setLoading(false);
-      return;
-    }
-
-    let destination = inviteToken
-      ? `/join/${encodeURIComponent(inviteToken)}`
-      : "/dashboard";
-    if (!inviteToken) {
-      try {
-        const ctx = await fetch("/api/session/context").then((r) => r.json());
-        if (ctx.surface === "platform") destination = "/console";
-      } catch {
-        /* fall through */
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, rememberMe }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Login failed");
+        setLoading(false);
+        return;
       }
+
+      let destination = inviteToken
+        ? `/join/${encodeURIComponent(inviteToken)}`
+        : data.surface === "platform"
+          ? "/console"
+          : "/dashboard";
+
+      window.location.href = destination;
+    } catch {
+      setError("Login failed");
+      setLoading(false);
     }
-    window.location.href = destination;
   };
 
   return (
@@ -176,6 +179,16 @@ function LoginPageInner() {
               />
             </div>
 
+            <label className="flex items-center gap-2 text-sm text-gray-600">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300"
+              />
+              Remember me
+            </label>
+
             <Button
               type="submit"
               disabled={loading}
@@ -192,19 +205,6 @@ function LoginPageInner() {
             </Button>
           </form>
 
-          <p className="mt-6 text-center text-sm text-gray-500">
-            {t("noAccount")}{" "}
-            <Link
-              href={
-                inviteToken
-                  ? `/signup?invite=${encodeURIComponent(inviteToken)}`
-                  : "/signup"
-              }
-              className="font-medium text-primary hover:underline underline-offset-4"
-            >
-              {t("createAccount")}
-            </Link>
-          </p>
         </div>
       </div>
     </div>

@@ -3,7 +3,7 @@
  * In-process handlers + durable write to platform_events (best-effort).
  */
 
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { DbClient as SupabaseClient } from '@/lib/db/client';
 
 export type PlatformEventType =
   | "whatsapp.message.received"

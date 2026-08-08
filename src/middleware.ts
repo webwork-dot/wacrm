@@ -1,112 +1,78 @@
-import { createServerClient } from '@supabase/ssr'
-import { NextResponse, type NextRequest } from 'next/server'
+import { NextResponse, type NextRequest } from "next/server";
+import { verifyAccessToken } from "@/lib/auth/jwt";
+import { REFRESH_COOKIE, SESSION_COOKIE } from "@/lib/auth/session-constants";
 
+/**
+ * Edge middleware — JWT verification only (no PostgreSQL).
+ * Token refresh happens in Node route handlers / server components.
+ */
 export async function middleware(request: NextRequest) {
-  let supabaseResponse = NextResponse.next({ request })
+  const access = request.cookies.get(SESSION_COOKIE)?.value;
+  const refresh = request.cookies.get(REFRESH_COOKIE)?.value;
+  const claims = await verifyAccessToken(access);
+  const user = claims ? { id: claims.sub, email: claims.email } : null;
+  // Soft presence: valid refresh alone is not enough for Edge; treat as logged-out
+  // until /api/auth/refresh issues a new access cookie. Protected pages will bounce
+  // to login; login page can call refresh via client if needed.
+  void refresh;
 
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll()
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) => request.cookies.set(name, value))
-          supabaseResponse = NextResponse.next({ request })
-          cookiesToSet.forEach(({ name, value, options }) =>
-            supabaseResponse.cookies.set(name, value, options)
-          )
-        },
-      },
-    }
-  )
+  const path = request.nextUrl.pathname;
 
-  const { data: { user } } = await supabase.auth.getUser()
-
-  // getUser() transparently refreshes an expired access token, which
-  // ROTATES the refresh token and writes the new cookies onto
-  // `supabaseResponse` via setAll() above. Any response we return in
-  // place of `supabaseResponse` (every redirect / JSON branch below)
-  // is a fresh object that does NOT carry those Set-Cookie headers, so
-  // the rotated token never reaches the browser. The next request then
-  // replays the old, now-consumed refresh token, the refresh fails, and
-  // the session wedges — the user gets a broken reload after idling and
-  // can only recover by manually clearing cookies (issue #288). Copy the
-  // refreshed cookies onto whatever response we hand back to fix that.
-  const withRefreshedCookies = <T extends NextResponse>(response: T): T => {
-    supabaseResponse.cookies.getAll().forEach((cookie) => {
-      response.cookies.set(cookie)
-    })
-    return response
-  }
-
-  // Auth pages - redirect to dashboard if already logged in.
-  // Exception: when an invite token is in the query string we
-  // send the already-signed-in user to /join/<token> instead so
-  // they can accept the invitation in one click. Without this,
-  // a forwarded invite link to someone who's already signed in
-  // would silently drop them on /dashboard.
-  if (user && (
-    request.nextUrl.pathname === '/login' ||
-    request.nextUrl.pathname === '/signup' ||
-    request.nextUrl.pathname === '/forgot-password'
-  )) {
-    const url = request.nextUrl.clone()
-    const inviteToken = request.nextUrl.searchParams.get('invite')
-    if (
-      inviteToken &&
-      (request.nextUrl.pathname === '/login' ||
-        request.nextUrl.pathname === '/signup')
-    ) {
-      url.pathname = `/join/${encodeURIComponent(inviteToken)}`
-      url.search = ''
+  if (
+    user &&
+    (path === "/login" || path === "/signup" || path === "/forgot-password")
+  ) {
+    const url = request.nextUrl.clone();
+    const inviteToken = request.nextUrl.searchParams.get("invite");
+    if (inviteToken && (path === "/login" || path === "/signup")) {
+      url.pathname = `/join/${encodeURIComponent(inviteToken)}`;
+      url.search = "";
     } else {
-      // Client shell redirects platform operators to /console after
-      // session context resolves; invite flow stays on join.
-      url.pathname = '/dashboard'
-      url.search = ''
+      url.pathname = "/dashboard";
+      url.search = "";
     }
-    return withRefreshedCookies(NextResponse.redirect(url))
+    return NextResponse.redirect(url);
   }
 
-  // Protected pages - redirect to login if not authenticated
   const protectedPaths = [
-    '/dashboard',
-    '/inbox',
-    '/contacts',
-    '/pipelines',
-    '/broadcasts',
-    '/automations',
-    '/settings',
-    '/flows',
-    '/agents',
-    '/onboarding',
-    '/starter-kits',
-    '/notifications',
-    '/admin',
-    '/console',
-  ]
-  if (!user && protectedPaths.some(path => request.nextUrl.pathname.startsWith(path))) {
-    const url = request.nextUrl.clone()
-    url.pathname = '/login'
-    return withRefreshedCookies(NextResponse.redirect(url))
+    "/dashboard",
+    "/inbox",
+    "/contacts",
+    "/pipelines",
+    "/broadcasts",
+    "/automations",
+    "/settings",
+    "/flows",
+    "/agents",
+    "/onboarding",
+    "/starter-kits",
+    "/notifications",
+    "/admin",
+    "/console",
+  ];
+
+  if (!user && protectedPaths.some((p) => path.startsWith(p))) {
+    // Attempt silent refresh via rewrite to API then back — simpler: redirect login
+    // Client shells call /api/auth/refresh on mount if needed.
+    const url = request.nextUrl.clone();
+    url.pathname = "/login";
+    url.searchParams.set("next", path);
+    return NextResponse.redirect(url);
   }
 
-  // API routes that need auth (not webhooks)
-  if (!user && request.nextUrl.pathname.startsWith('/api/whatsapp/') &&
-      !request.nextUrl.pathname.includes('/webhook')) {
-    return withRefreshedCookies(
-      NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    )
+  if (
+    !user &&
+    path.startsWith("/api/whatsapp/") &&
+    !path.includes("/webhook")
+  ) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  return supabaseResponse
+  return NextResponse.next({ request });
 }
 
 export const config = {
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    "/((?!_next/static|_next/image|favicon.ico|api/auth/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
-}
+};

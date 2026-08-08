@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { DbClient as SupabaseClient } from '@/lib/db/client';
 import {
   dedupeByPhone,
   findExistingContact,

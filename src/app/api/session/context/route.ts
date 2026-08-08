@@ -1,53 +1,49 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { supabaseAdmin } from "@/lib/flows/admin-client";
+import { getRequestUser } from "@/lib/auth/session-cookies";
 import { toErrorResponse, UnauthorizedError } from "@/lib/auth/account";
 import { isAccountRole, type AccountRole } from "@/lib/auth/roles";
 import {
   fallbackPermissions,
   type Permission,
 } from "@/lib/auth/permissions";
-import { loadFeatureFlags } from "@/lib/auth/feature-flags";
 import { resolvePlatformUser } from "@/lib/auth/platform-admin";
-import {
-  getWorkspaceCookies,
-} from "@/lib/auth/workspace-cookies";
+import { getWorkspaceCookies } from "@/lib/auth/workspace-cookies";
 import { filterNav } from "@/lib/nav/registry";
 import { computeClientHealth } from "@/lib/platform/client-health";
-import { loadAccountPlan } from "@/lib/platform/plans";
+import { query } from "@/lib/db/pool";
 
 /**
  * GET /api/session/context
- * Single payload for shells: surface, workspace, permissions, flags, nav, health.
+ * Native session + plain PostgreSQL (no Supabase Auth).
  */
 export async function GET() {
   try {
-    const supabase = await createClient();
-    const {
-      data: { user },
-      error,
-    } = await supabase.auth.getUser();
-    if (error || !user) throw new UnauthorizedError();
+    const user = await getRequestUser();
+    if (!user) throw new UnauthorizedError();
 
-    const admin = supabaseAdmin();
-    const email = user.email ?? "";
+    const email = user.email;
     const platformUser = await resolvePlatformUser(user.id, email);
     const { impersonateAccountId } = await getWorkspaceCookies();
 
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("account_id, account_role, full_name, avatar_url")
-      .eq("user_id", user.id)
-      .maybeSingle();
+    const { rows: profiles } = await query<{
+      account_id: string | null;
+      account_role: string | null;
+      full_name: string | null;
+      avatar_url: string | null;
+    }>(
+      `SELECT account_id, account_role, full_name, avatar_url
+       FROM profiles WHERE user_id = $1 LIMIT 1`,
+      [user.id],
+    );
+    const profile = profiles[0] ?? null;
 
     let accountId =
-      impersonateAccountId ||
-      (profile?.account_id as string | null) ||
-      null;
+      impersonateAccountId || profile?.account_id || null;
 
-    // Platform user without impersonation → platform surface
     const surface: "platform" | "client" =
       platformUser && !impersonateAccountId ? "platform" : "client";
+
+    const featureFlags = await loadFlags(accountId);
 
     if (!accountId && surface === "client") {
       return NextResponse.json({
@@ -62,7 +58,7 @@ export async function GET() {
         workspace: null,
         accountRole: null,
         permissions: [],
-        featureFlags: await loadFeatureFlags(admin),
+        featureFlags,
         planEntitlements: {},
         branding: null,
         impersonation: null,
@@ -73,180 +69,134 @@ export async function GET() {
         user: {
           id: user.id,
           email,
-          fullName: profile?.full_name ?? null,
+          fullName: profile?.full_name ?? user.fullName,
           avatarUrl: profile?.avatar_url ?? null,
         },
       });
     }
 
-    // Load account + plan
     let workspace: Record<string, unknown> | null = null;
     let accountRole: AccountRole | null =
       profile?.account_role && isAccountRole(profile.account_role)
         ? profile.account_role
         : null;
 
-    if (accountId) {
-      const { data: acct } = await admin
-        .from("accounts")
-        .select(
-          "id, name, display_name, logo_url, primary_color, status, plan_id, software_plans ( slug, name, entitlements )",
-        )
-        .eq("id", accountId)
-        .maybeSingle();
+    let planEntitlements: Record<string, boolean> = {};
 
+    if (accountId) {
+      const { rows: accts } = await query<{
+        id: string;
+        name: string;
+        display_name: string | null;
+        logo_url: string | null;
+        primary_color: string | null;
+        status: string;
+        plan_slug: string | null;
+        plan_name: string | null;
+        entitlements: Record<string, boolean> | null;
+      }>(
+        `SELECT a.id, a.name, a.display_name, a.logo_url, a.primary_color, a.status,
+                p.slug AS plan_slug, p.name AS plan_name, p.entitlements
+         FROM accounts a
+         LEFT JOIN software_plans p ON p.id = a.plan_id
+         WHERE a.id = $1`,
+        [accountId],
+      );
+      const acct = accts[0];
       if (acct) {
-        const planRaw = (acct as { software_plans?: unknown }).software_plans;
-        const plan = Array.isArray(planRaw) ? planRaw[0] : planRaw;
         workspace = {
           id: acct.id,
-          name: (acct as { display_name?: string }).display_name || acct.name,
-          status: (acct as { status?: string }).status ?? "active",
-          planSlug: (plan as { slug?: string } | null)?.slug ?? null,
-          planName: (plan as { name?: string } | null)?.name ?? null,
-          logoUrl: (acct as { logo_url?: string }).logo_url ?? null,
-          primaryColor: (acct as { primary_color?: string }).primary_color ?? null,
+          name: acct.display_name || acct.name,
+          status: acct.status ?? "active",
+          planSlug: acct.plan_slug,
+          planName: acct.plan_name,
+          logoUrl: acct.logo_url,
+          primaryColor: acct.primary_color,
         };
+        planEntitlements = acct.entitlements ?? {};
       }
-
-      // When impersonating, treat as owner-equivalent for viewing (read path);
-      // permissions still come from platform + client owner grants for support.
-      if (impersonateAccountId && platformUser) {
-        accountRole = "owner";
-      }
+      if (impersonateAccountId && platformUser) accountRole = "owner";
     }
 
-    // Permissions
     let permissions: Permission[] = fallbackPermissions({
       platformRole: platformUser?.platformRole,
       accountRole: surface === "client" ? accountRole : null,
     });
 
-    try {
-      if (platformUser) {
-        const { data: pr } = await admin
-          .from("role_permissions")
-          .select("permission_key")
-          .eq("platform_role", platformUser.platformRole);
-        if (pr?.length) {
-          permissions = [
-            ...new Set([
-              ...permissions,
-              ...pr.map((r) => r.permission_key as Permission),
-            ]),
-          ];
-        }
-      }
-      if (surface === "client" && accountRole) {
-        const { data: ar } = await admin
-          .from("role_permissions")
-          .select("permission_key")
-          .eq("account_role", accountRole);
-        if (ar?.length) {
-          const clientPerms = ar.map((r) => r.permission_key as Permission);
-          if (platformUser && impersonateAccountId) {
-            permissions = [...new Set([...permissions, ...clientPerms])];
-          } else if (!platformUser || impersonateAccountId) {
-            permissions = [
-              ...new Set([
-                ...(platformUser
-                  ? permissions.filter((p) => p.startsWith("platform."))
-                  : []),
-                ...clientPerms,
-              ]),
-            ];
-          } else {
-            permissions = clientPerms;
-          }
-        }
-      }
-    } catch {
-      /* pre-045 */
-    }
-
-    const featureFlags = await loadFeatureFlags(admin, accountId);
-    let planEntitlements: Record<string, boolean> = {};
-    if (accountId) {
-      try {
-        const planInfo = await loadAccountPlan(admin, accountId);
-        planEntitlements = planInfo.plan?.entitlements ?? {};
-      } catch {
-        /* ignore */
+    if (platformUser) {
+      const { rows } = await query<{ permission_key: string }>(
+        `SELECT permission_key FROM role_permissions WHERE platform_role = $1`,
+        [platformUser.platformRole],
+      );
+      if (rows.length) {
+        permissions = [
+          ...new Set([
+            ...permissions,
+            ...rows.map((r) => r.permission_key as Permission),
+          ]),
+        ];
       }
     }
 
-    // Health (client workspace)
-    let health = null;
+    if (surface === "client" && accountRole) {
+      const { rows } = await query<{ permission_key: string }>(
+        `SELECT permission_key FROM role_permissions WHERE account_role = $1`,
+        [accountRole],
+      );
+      if (rows.length) {
+        permissions = [
+          ...new Set(rows.map((r) => r.permission_key as Permission)),
+        ];
+      }
+    }
+
+    let health: ReturnType<typeof computeClientHealth> | null = null;
+    let onboarding: {
+      steps: { id: string; title: string; href: string; done: boolean }[];
+      progress: number;
+      complete: boolean;
+    } | null = null;
     if (accountId && surface === "client") {
       const [wa, ai, kb, flows] = await Promise.all([
-        admin
-          .from("whatsapp_config")
-          .select("id", { count: "exact", head: true })
-          .eq("account_id", accountId),
-        admin
-          .from("ai_configs")
-          .select("id", { count: "exact", head: true })
-          .eq("account_id", accountId),
-        admin
-          .from("ai_knowledge_documents")
-          .select("id", { count: "exact", head: true })
-          .eq("account_id", accountId),
-        admin
-          .from("flows")
-          .select("id", { count: "exact", head: true })
-          .eq("account_id", accountId)
-          .eq("status", "active"),
+        countWhere("whatsapp_config", accountId),
+        countWhere("ai_configs", accountId),
+        countWhere("ai_knowledge_documents", accountId),
+        countWhere("flows", accountId, `status = 'active'`),
       ]);
       health = computeClientHealth({
-        whatsappConnected: (wa.count ?? 0) > 0,
-        aiConfigured: (ai.count ?? 0) > 0,
-        knowledgeHasDocs: (kb.count ?? 0) > 0,
-        automationActive: (flows.count ?? 0) > 0,
-        status:
-          (workspace?.status as "active" | "suspended") ?? "active",
+        whatsappConnected: wa > 0,
+        aiConfigured: ai > 0,
+        knowledgeHasDocs: kb > 0,
+        automationActive: flows > 0,
+        status: (workspace?.status as "active" | "suspended") ?? "active",
       });
-    }
 
-    // Onboarding checklist for client
-    let onboarding = null;
-    if (accountId && surface === "client" && health) {
       const steps = [
         {
           id: "whatsapp",
           title: "Connect WhatsApp",
           href: "/settings?tab=whatsapp",
-          done: health.score >= 30 || !health.reasons.includes("WhatsApp not connected"),
+          done: wa > 0,
         },
         {
           id: "ai",
           title: "Connect AI",
           href: "/agents?tab=studio",
-          done: !health.reasons.includes("AI not set up"),
+          done: ai > 0,
         },
         {
           id: "knowledge",
           title: "Upload Knowledge",
           href: "/agents?tab=knowledge",
-          done: !health.reasons.includes("No knowledge documents"),
+          done: kb > 0,
         },
         {
           id: "automation",
           title: "Publish first automation",
           href: "/flows",
-          done: !health.reasons.includes("No active automation"),
+          done: flows > 0,
         },
       ];
-      // Recompute done flags more accurately
-      const [wa, ai, kb, fl] = await Promise.all([
-        admin.from("whatsapp_config").select("id").eq("account_id", accountId).limit(1),
-        admin.from("ai_configs").select("id").eq("account_id", accountId).limit(1),
-        admin.from("ai_knowledge_documents").select("id").eq("account_id", accountId).limit(1),
-        admin.from("flows").select("id").eq("account_id", accountId).eq("status", "active").limit(1),
-      ]);
-      steps[0].done = (wa.data?.length ?? 0) > 0;
-      steps[1].done = (ai.data?.length ?? 0) > 0;
-      steps[2].done = (kb.data?.length ?? 0) > 0;
-      steps[3].done = (fl.data?.length ?? 0) > 0;
       const doneCount = steps.filter((s) => s.done).length;
       onboarding = {
         steps,
@@ -258,24 +208,25 @@ export async function GET() {
     let switchableAccounts: Array<{ id: string; name: string; status: string }> =
       [];
     if (platformUser) {
-      const [{ data: accounts }, { data: platformRows }] = await Promise.all([
-        admin
-          .from("accounts")
-          .select("id, name, display_name, status, owner_user_id")
-          .order("name")
-          .limit(100),
-        admin.from("platform_users").select("user_id").eq("status", "active"),
-      ]);
-      const platformOwnerIds = new Set(
-        (platformRows ?? []).map((r) => r.user_id as string),
+      const { rows } = await query<{
+        id: string;
+        name: string;
+        display_name: string | null;
+        status: string;
+      }>(
+        `SELECT a.id, a.name, a.display_name, a.status
+         FROM accounts a
+         WHERE a.owner_user_id NOT IN (
+           SELECT user_id FROM platform_users WHERE status = 'active'
+         )
+         ORDER BY a.name
+         LIMIT 100`,
       );
-      switchableAccounts = (accounts ?? [])
-        .filter((a) => !platformOwnerIds.has(a.owner_user_id as string))
-        .map((a) => ({
-          id: a.id,
-          name: (a as { display_name?: string }).display_name || a.name,
-          status: (a as { status?: string }).status ?? "active",
-        }));
+      switchableAccounts = rows.map((a) => ({
+        id: a.id,
+        name: a.display_name || a.name,
+        status: a.status ?? "active",
+      }));
     }
 
     const nav = filterNav({
@@ -319,11 +270,41 @@ export async function GET() {
       user: {
         id: user.id,
         email,
-        fullName: profile?.full_name ?? null,
+        fullName: profile?.full_name ?? user.fullName,
         avatarUrl: profile?.avatar_url ?? null,
       },
     });
   } catch (err) {
     return toErrorResponse(err);
   }
+}
+
+async function loadFlags(accountId: string | null) {
+  const { rows } = await query<{ key: string; enabled: boolean }>(
+    `SELECT key, enabled FROM feature_flags
+     WHERE account_id IS NULL OR account_id = $1`,
+    [accountId],
+  );
+  const out: Record<string, boolean> = {};
+  for (const r of rows) out[r.key] = r.enabled;
+  return out;
+}
+
+async function countWhere(
+  table: string,
+  accountId: string,
+  extra = "TRUE",
+): Promise<number> {
+  const allowed = new Set([
+    "whatsapp_config",
+    "ai_configs",
+    "ai_knowledge_documents",
+    "flows",
+  ]);
+  if (!allowed.has(table)) return 0;
+  const { rows } = await query<{ c: string }>(
+    `SELECT count(*)::text AS c FROM ${table} WHERE account_id = $1 AND (${extra})`,
+    [accountId],
+  );
+  return Number(rows[0]?.c ?? 0);
 }
